@@ -1,0 +1,62 @@
+db_path: ./data/honeysentinel.db
+security:
+  api_key: changeme
+privacy:
+  store_tcp_payload_preview: false
+  tcp_payload_preview_bytes: 256
+alerts:
+  slack:
+    enabled: false
+    webhook_url: ""
+  webhook:
+    enabled: false
+    url: ""
+  syslog:
+    enabled: false
+    host: 127.0.0.1
+    port: 5514
+rules:
+  suppression_seconds: 120
+  portscan_window_seconds: 60
+  portscan_distinct_ports: 4
+  burst_window_seconds: 30
+  burst_events: 8
+  http_path_substrings:
+    - /admin
+    - /login
+    - phpmyadmin
+    - wp-
+  payload_keywords:
+    - "select "
+    - "union "
+    - "../"
+    - "cmd="
+listeners:
+  tcp:
+    - name: ssh-decoy
+      host: 0.0.0.0
+      port: 12222
+      mode: ssh
+      banner: "SSH-2.0-OpenSSH_9.9"
+    - name: telnet-decoy
+      host: 0.0.0.0
+      port: 12323
+      mode: telnet
+    - name: smtp-decoy
+      host: 0.0.0.0
+      port: 12525
+      mode: smtp
+    - name: redis-decoy
+      host: 0.0.0.0
+      port: 16379
+      mode: redis
+    - name: binary-decoy
+      host: 0.0.0.0
+      port: 19000
+      mode: binary
+      max_bytes: 2048
+  http:
+    host: 0.0.0.0
+    port: 18080
+    max_headers: 64
+    max_body_bytes: 4096
