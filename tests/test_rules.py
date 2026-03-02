@@ -72,3 +72,16 @@ def test_suricata_correlation_raises_severity() -> None:
     keyword = next(a for a in alerts if a.rule == "payload_keywords")
     assert keyword.severity == "critical"
     assert any(a.rule == "correlated_alert" for a in alerts)
+
+
+def test_rdp_attempt_and_repeat_escalation() -> None:
+    engine = RuleEngine(RulesConfig(burst_window_seconds=60, suppression_seconds=0))
+
+    first = engine.evaluate(_event("6.6.6.6", 33890, listener="rdp-decoy", data={"mode": "rdp"}))
+    assert any(a.rule == "rdp_attempt" and a.severity == "medium" for a in first)
+
+    second = engine.evaluate(_event("6.6.6.6", 33890, listener="rdp-decoy", data={"mode": "rdp"}))
+    assert any(a.rule == "rdp_attempt" and a.severity == "medium" for a in second)
+
+    third = engine.evaluate(_event("6.6.6.6", 33890, listener="rdp-decoy", data={"mode": "rdp"}))
+    assert any(a.rule == "rdp_repeated" and a.severity == "high" for a in third)

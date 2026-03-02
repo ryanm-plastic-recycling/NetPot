@@ -45,6 +45,7 @@ class RuleEngine:
         alerts.extend(self._burst(event, now))
         alerts.extend(self._http_paths(event, now))
         alerts.extend(self._payload_keywords(event, now))
+        alerts.extend(self._rdp_attempts(event, now))
         alerts.extend(self._correlated_alert(event, now, alerts))
         return alerts
 
@@ -163,4 +164,40 @@ class RuleEngine:
                         context={"listener": event.listener},
                     )
                 ]
+        return []
+
+    def _rdp_attempts(self, event: Event, now: datetime) -> list[Alert]:
+        is_rdp_event = event.event_type == "rdp_probe" or event.data.get("mode") == "rdp"
+        if not is_rdp_event:
+            return []
+
+        cutoff = now - timedelta(seconds=self.cfg.burst_window_seconds)
+        attempts = sum(
+            1
+            for ts, existing in self.events_by_ip[event.src_ip].timestamps
+            if ts >= cutoff and (existing.event_type == "rdp_probe" or existing.data.get("mode") == "rdp")
+        )
+
+        if attempts >= 3 and self._should_alert("rdp_repeated", event.src_ip, now):
+            return [
+                Alert(
+                    "rdp_repeated",
+                    "high",
+                    event.src_ip,
+                    f"Repeated RDP connection attempts ({attempts})",
+                    context={"listener": event.listener},
+                )
+            ]
+
+        if self._should_alert("rdp_attempt", event.src_ip, now):
+            return [
+                Alert(
+                    "rdp_attempt",
+                    "medium",
+                    event.src_ip,
+                    "RDP connection attempt observed",
+                    context={"listener": event.listener},
+                )
+            ]
+
         return []

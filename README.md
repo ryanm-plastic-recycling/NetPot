@@ -2,6 +2,8 @@
 
 HoneySentinel is a **defensive**, low-interaction honeypot + alerting service. It exposes decoy TCP and HTTP listeners, records structured events to SQLite, runs local detection rules, and forwards alerts to email/Twilio/webhooks/syslog.
 
+Built-in TCP decoys include SSH, Telnet, SMTP, Redis, generic binary, and an optional low-interaction RDP listener (default RDP port is 3389; use 33890 in unprivileged local setups).
+
 ## Safety warnings
 
 - Use only on systems and networks you are authorized to monitor.
@@ -14,6 +16,7 @@ HoneySentinel is a **defensive**, low-interaction honeypot + alerting service. I
 - Event metadata (timestamps, source/destination ports, listener, messages)
 - JSON event data per event
 - By default, TCP stores hash + byte length only; no raw payload preview unless explicitly enabled.
+- RDP decoy mode does **not** implement RDP authentication or a full handshake; it only accepts a connection, reads a bounded first chunk, stores summary metadata, and closes.
 - HTTP request headers and body previews are redacted for credentials/secrets.
 
 ## Passive network visibility inputs
@@ -41,6 +44,7 @@ API/dashboard run on `http://127.0.0.1:8000`.
 - `alerts.twilio`: SMS alerting via Twilio REST API. By default only severities `>= high` send (`min_severity` configurable).
 - `rules.suppression_seconds`: deduplicates repeat alerts for the same rule + source IP.
 - Correlation rule raises severity one level and emits `correlated_alert` when honeypot activity and Suricata alerts share `src_ip` inside `rules.correlation_window_minutes`.
+- RDP attempt rule: any RDP connection attempt triggers `medium` severity (`rdp_attempt`), and repeated attempts in the burst window escalate to `high` (`rdp_repeated`).
 
 ## Zeek JSON note
 

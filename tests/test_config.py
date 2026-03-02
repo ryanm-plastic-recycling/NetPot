@@ -12,3 +12,4 @@ def test_load_example_config() -> None:
     assert cfg.alerts.twilio.enabled is False
     assert cfg.ingest.suricata.enabled is False
     assert cfg.ingest.zeek.enabled is False
+    assert any(listener.mode == "rdp" and listener.port == 33890 for listener in cfg.tcp_listeners)
