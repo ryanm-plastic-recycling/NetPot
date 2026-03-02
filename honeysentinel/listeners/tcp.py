@@ -150,6 +150,28 @@ class TcpListener:
                         data={"sha256": sha256_hex(data), "bytes_in": len(data)},
                     )
                 )
+            elif mode == "rdp":
+                data = await asyncio.wait_for(reader.read(self.cfg.max_bytes), timeout=5)
+                payload: dict[str, object] = {
+                    "sha256": sha256_hex(data),
+                    "bytes_in": len(data),
+                }
+                if self.privacy.store_tcp_payload_preview and data:
+                    payload["payload_preview"] = preview_bytes(
+                        data, self.privacy.tcp_payload_preview_bytes
+                    )
+                await self._emit(
+                    Event(
+                        event_type="rdp_probe",
+                        src_ip=src_ip,
+                        src_port=src_port,
+                        dst_port=self.cfg.port,
+                        listener=self.cfg.name,
+                        session_id=session,
+                        message="RDP connection attempt summary",
+                        data=payload,
+                    )
+                )
             else:
                 data = await asyncio.wait_for(reader.read(self.cfg.max_bytes), timeout=5)
                 payload: dict[str, object] = {

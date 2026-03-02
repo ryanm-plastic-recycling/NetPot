@@ -81,6 +81,11 @@ listeners:
       port: 19000
       mode: binary
       max_bytes: 2048
+    - name: rdp-decoy
+      host: 0.0.0.0
+      port: 33890
+      mode: rdp
+      max_bytes: 2048
   http:
     host: 0.0.0.0
     port: 18080
