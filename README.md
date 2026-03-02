@@ -1,6 +1,6 @@
 # HoneySentinel
 
-HoneySentinel is a **defensive**, low-interaction honeypot + alerting service. It exposes decoy TCP and HTTP listeners, records structured events to SQLite, runs local detection rules, and forwards alerts to Slack/webhooks/syslog.
+HoneySentinel is a **defensive**, low-interaction honeypot + alerting service. It exposes decoy TCP and HTTP listeners, records structured events to SQLite, runs local detection rules, and forwards alerts to email/Twilio/webhooks/syslog.
 
 ## Safety warnings
 
@@ -16,6 +16,13 @@ HoneySentinel is a **defensive**, low-interaction honeypot + alerting service. I
 - By default, TCP stores hash + byte length only; no raw payload preview unless explicitly enabled.
 - HTTP request headers and body previews are redacted for credentials/secrets.
 
+## Passive network visibility inputs
+
+- **Suricata** is an IDS/IPS/NSM engine. HoneySentinel can ingest Suricata EVE JSON lines and normalize fields such as `src_ip`, `dest_ip`, ports, protocol, and `alert.signature`.
+- **Zeek** is a passive NSM platform producing rich connection/protocol logs. HoneySentinel can ingest Zeek JSON `conn.log` style lines.
+- Passive visibility requires mirrored traffic (SPAN/TAP) or flow export. Without those feeds, a sensor mostly sees its own host traffic.
+- Ingestion is defensive-only: it tails existing logs, checkpoints `(inode, offset)`, handles rotation, and skips malformed lines.
+
 ## Quickstart (Python)
 
 ```bash
@@ -28,23 +35,16 @@ python -m honeysentinel config.yaml
 
 API/dashboard run on `http://127.0.0.1:8000`.
 
-## Quickstart (Docker)
+## Alerts
 
-```bash
-docker compose up --build
-```
+- `alerts.email`: SMTP alerting with optional STARTTLS and optional auth (`username/password` can be empty for relay).
+- `alerts.twilio`: SMS alerting via Twilio REST API. By default only severities `>= high` send (`min_severity` configurable).
+- `rules.suppression_seconds`: deduplicates repeat alerts for the same rule + source IP.
+- Correlation rule raises severity one level and emits `correlated_alert` when honeypot activity and Suricata alerts share `src_ip` inside `rules.correlation_window_minutes`.
 
-This uses `config.example.yaml` and mounts database storage under `./data`.
+## Zeek JSON note
 
-## Config overview
-
-See `config.example.yaml` for all fields:
-
-- `security.api_key`: protects `/api/*` using `X-API-Key`.
-- `privacy.store_tcp_payload_preview`: defaults to `false`.
-- `rules.*`: thresholds for portscan, burst, path, and payload keyword detections.
-- `listeners.tcp`: low-interaction service emulations.
-- `listeners.http`: raw HTTP listener with caps.
+If your Zeek deployment outputs JSON logs, point `ingest.zeek.log_dir` to its active log directory (commonly `/opt/zeek/logs/current` or `/var/log/zeek/current`) and enable `ingest.zeek.enabled`.
 
 ## Test alert quickly
 
@@ -57,10 +57,6 @@ Then query events:
 ```bash
 curl -H "X-API-Key: changeme" http://127.0.0.1:8000/api/events
 ```
-
-## Database location
-
-SQLite database path is `db_path` in config (default: `./data/honeysentinel.db`).
 
 ## Development
 

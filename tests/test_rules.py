@@ -45,3 +45,30 @@ def test_burst_http_path_and_payload_keyword() -> None:
 
     kw_alerts = engine.evaluate(_event("4.4.4.4", 8080, message="UNION SELECT *"))
     assert any(a.rule == "payload_keywords" for a in kw_alerts)
+
+
+def test_suricata_correlation_raises_severity() -> None:
+    engine = RuleEngine(
+        RulesConfig(
+            burst_events=2,
+            payload_keywords=["union"],
+            suppression_seconds=0,
+            correlation_window_minutes=10,
+        )
+    )
+    suricata = Event(
+        event_type="suricata_eve",
+        src_ip="9.9.9.9",
+        src_port=12345,
+        dst_port=22,
+        listener="suricata",
+        session_id="x",
+        message="ET Scan",
+        data={"event_type": "alert", "signature": "ET Scan"},
+    )
+    engine.evaluate(suricata)
+
+    alerts = engine.evaluate(_event("9.9.9.9", 8080, message="union"))
+    keyword = next(a for a in alerts if a.rule == "payload_keywords")
+    assert keyword.severity == "critical"
+    assert any(a.rule == "correlated_alert" for a in alerts)

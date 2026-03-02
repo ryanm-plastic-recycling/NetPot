@@ -19,9 +19,25 @@ class SecurityConfig:
 
 
 @dataclass(slots=True)
-class AlertSlackConfig:
+class AlertEmailConfig:
     enabled: bool = False
-    webhook_url: str = ""
+    smtp_host: str = "localhost"
+    smtp_port: int = 25
+    username: str = ""
+    password: str = ""
+    from_addr: str = "honeysentinel@example.local"
+    to_addrs: list[str] = field(default_factory=list)
+    use_starttls: bool = False
+
+
+@dataclass(slots=True)
+class AlertTwilioConfig:
+    enabled: bool = False
+    account_sid: str = ""
+    auth_token: str = ""
+    from_number: str = ""
+    to_numbers: list[str] = field(default_factory=list)
+    min_severity: str = "high"
 
 
 @dataclass(slots=True)
@@ -39,14 +55,37 @@ class AlertSyslogConfig:
 
 @dataclass(slots=True)
 class AlertsConfig:
-    slack: AlertSlackConfig = field(default_factory=AlertSlackConfig)
+    email: AlertEmailConfig = field(default_factory=AlertEmailConfig)
+    twilio: AlertTwilioConfig = field(default_factory=AlertTwilioConfig)
     webhook: AlertWebhookConfig = field(default_factory=AlertWebhookConfig)
     syslog: AlertSyslogConfig = field(default_factory=AlertSyslogConfig)
 
 
 @dataclass(slots=True)
+class SuricataIngestConfig:
+    enabled: bool = False
+    eve_path: str = "/var/log/suricata/eve.json"
+    max_line_bytes: int = 65536
+
+
+@dataclass(slots=True)
+class ZeekIngestConfig:
+    enabled: bool = False
+    log_dir: str = "/opt/zeek/logs/current"
+    fallback_log_dir: str = "/var/log/zeek/current"
+    max_line_bytes: int = 65536
+
+
+@dataclass(slots=True)
+class IngestConfig:
+    suricata: SuricataIngestConfig = field(default_factory=SuricataIngestConfig)
+    zeek: ZeekIngestConfig = field(default_factory=ZeekIngestConfig)
+
+
+@dataclass(slots=True)
 class RulesConfig:
     suppression_seconds: int = 120
+    correlation_window_minutes: int = 10
     portscan_window_seconds: int = 60
     portscan_distinct_ports: int = 6
     burst_window_seconds: int = 30
@@ -83,6 +122,7 @@ class AppConfig:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
     rules: RulesConfig = field(default_factory=RulesConfig)
     tcp_listeners: list[TcpListenerConfig] = field(default_factory=list)
     http_listener: HttpListenerConfig = field(default_factory=HttpListenerConfig)
@@ -112,9 +152,16 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
 
     alerts_raw = raw.get("alerts", {})
     alerts = AlertsConfig(
-        slack=AlertSlackConfig(**alerts_raw.get("slack", {})),
+        email=AlertEmailConfig(**alerts_raw.get("email", {})),
+        twilio=AlertTwilioConfig(**alerts_raw.get("twilio", {})),
         webhook=AlertWebhookConfig(**alerts_raw.get("webhook", {})),
         syslog=AlertSyslogConfig(**alerts_raw.get("syslog", {})),
+    )
+
+    ingest_raw = raw.get("ingest", {})
+    ingest = IngestConfig(
+        suricata=SuricataIngestConfig(**ingest_raw.get("suricata", {})),
+        zeek=ZeekIngestConfig(**ingest_raw.get("zeek", {})),
     )
 
     rules = RulesConfig(**raw.get("rules", {}))
@@ -133,6 +180,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         security=security,
         privacy=privacy,
         alerts=alerts,
+        ingest=ingest,
         rules=rules,
         tcp_listeners=listeners,
         http_listener=http_listener,
