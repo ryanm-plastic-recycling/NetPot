@@ -8,6 +8,8 @@ from honeysentinel.alerting import Alert
 from honeysentinel.config import RulesConfig
 from honeysentinel.events import Event
 
+_SEVERITIES = ["low", "medium", "high", "critical"]
+
 
 @dataclass(slots=True)
 class _State:
@@ -19,9 +21,17 @@ class RuleEngine:
         self.cfg = cfg
         self.events_by_ip: dict[str, _State] = defaultdict(lambda: _State(deque()))
         self.last_alert: dict[tuple[str, str], datetime] = {}
+        self.suricata_alerts_by_ip: dict[str, deque[datetime]] = defaultdict(deque)
 
     def evaluate(self, event: Event) -> list[Alert]:
         now = datetime.now(timezone.utc)
+        if event.listener == "suricata":
+            event_type = str(event.data.get("event_type", ""))
+            if event_type == "alert" or bool(event.data.get("signature")):
+                self.suricata_alerts_by_ip[event.src_ip].append(now)
+            self._trim_suricata(now)
+            return []
+
         state = self.events_by_ip[event.src_ip]
         state.timestamps.append((now, event))
 
@@ -35,7 +45,44 @@ class RuleEngine:
         alerts.extend(self._burst(event, now))
         alerts.extend(self._http_paths(event, now))
         alerts.extend(self._payload_keywords(event, now))
+        alerts.extend(self._correlated_alert(event, now, alerts))
         return alerts
+
+    def _trim_suricata(self, now: datetime) -> None:
+        cutoff = now - timedelta(minutes=self.cfg.correlation_window_minutes)
+        for ip in list(self.suricata_alerts_by_ip):
+            queue = self.suricata_alerts_by_ip[ip]
+            while queue and queue[0] < cutoff:
+                queue.popleft()
+            if not queue:
+                del self.suricata_alerts_by_ip[ip]
+
+    def _correlated_alert(self, event: Event, now: datetime, alerts: list[Alert]) -> list[Alert]:
+        self._trim_suricata(now)
+        if event.src_ip not in self.suricata_alerts_by_ip:
+            return []
+
+        for alert in alerts:
+            alert.severity = self._bump(alert.severity)
+
+        if self._should_alert("correlated_alert", event.src_ip, now):
+            return [
+                Alert(
+                    "correlated_alert",
+                    "high",
+                    event.src_ip,
+                    "Source IP observed in both honeypot and Suricata alert stream",
+                    context={"listener": event.listener},
+                )
+            ]
+        return []
+
+    def _bump(self, severity: str) -> str:
+        try:
+            index = _SEVERITIES.index(severity)
+        except ValueError:
+            return severity
+        return _SEVERITIES[min(index + 1, len(_SEVERITIES) - 1)]
 
     def _should_alert(self, rule: str, src_ip: str, now: datetime) -> bool:
         key = (rule, src_ip)
@@ -56,7 +103,7 @@ class RuleEngine:
             "portscan", event.src_ip, now
         ):
             msg = f"{len(ports)} distinct destination ports in window"
-            return [Alert("portscan", "high", event.src_ip, msg)]
+            return [Alert("portscan", "high", event.src_ip, msg, context={"listener": event.listener})]
         return []
 
     def _burst(self, event: Event, now: datetime) -> list[Alert]:
@@ -75,6 +122,7 @@ class RuleEngine:
                     "medium",
                     event.src_ip,
                     f"{count} events on listener {event.listener}",
+                    context={"listener": event.listener},
                 )
             ]
         return []
@@ -84,7 +132,13 @@ class RuleEngine:
         if path and any(x.lower() in path for x in self.cfg.http_path_substrings):
             if self._should_alert("http_paths", event.src_ip, now):
                 return [
-                    Alert("http_paths", "medium", event.src_ip, f"Suspicious HTTP path {path}")
+                    Alert(
+                        "http_paths",
+                        "medium",
+                        event.src_ip,
+                        f"Suspicious HTTP path {path}",
+                        context={"listener": event.listener},
+                    )
                 ]
         return []
 
@@ -106,6 +160,7 @@ class RuleEngine:
                         "high",
                         event.src_ip,
                         f"Keyword matched: {keyword}",
+                        context={"listener": event.listener},
                     )
                 ]
         return []

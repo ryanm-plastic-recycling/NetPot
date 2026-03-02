@@ -14,6 +14,7 @@ from honeysentinel.alerting import Alerter
 from honeysentinel.config import AppConfig, load_config
 from honeysentinel.db import Database
 from honeysentinel.events import Event
+from honeysentinel.ingest import JsonLineTailer, parse_suricata_eve_line, parse_zeek_conn_line
 from honeysentinel.listeners.http import RawHttpListener
 from honeysentinel.listeners.tcp import TcpListener
 from honeysentinel.rules import RuleEngine
@@ -26,10 +27,14 @@ class AppState:
         self.rules = RuleEngine(config.rules)
         self.alerter = Alerter(config.alerts)
         self.listeners: list[TcpListener | RawHttpListener] = []
+        self.ingest_tasks: list[asyncio.Task[None]] = []
+        self.ingestors: list[JsonLineTailer] = []
 
     async def handle_event(self, event: Event) -> None:
-        await self.db.insert_event(event)
+        event_id = await self.db.insert_event(event)
         for alert in self.rules.evaluate(event):
+            alert.context.setdefault("listener", event.listener)
+            alert.context.setdefault("event_id", event_id)
             await self.alerter.send(alert)
 
 
@@ -47,9 +52,47 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         raw_http = RawHttpListener(cfg.http_listener, state.handle_event)
         await raw_http.start()
         state.listeners.append(raw_http)
+
+        if cfg.ingest.suricata.enabled:
+            suricata_tailer = JsonLineTailer(
+                source_key="suricata",
+                path_getter=lambda: Path(cfg.ingest.suricata.eve_path),
+                parser=parse_suricata_eve_line,
+                get_state=state.db.get_ingest_state,
+                set_state=state.db.set_ingest_state,
+                handle_event=state.handle_event,
+                max_line_bytes=cfg.ingest.suricata.max_line_bytes,
+            )
+            state.ingestors.append(suricata_tailer)
+            state.ingest_tasks.append(asyncio.create_task(suricata_tailer.run()))
+
+        if cfg.ingest.zeek.enabled:
+            def _zeek_path() -> Path | None:
+                primary = Path(cfg.ingest.zeek.log_dir) / "conn.log"
+                fallback = Path(cfg.ingest.zeek.fallback_log_dir) / "conn.log"
+                if primary.exists():
+                    return primary
+                if fallback.exists():
+                    return fallback
+                return None
+
+            zeek_tailer = JsonLineTailer(
+                source_key="zeek_conn",
+                path_getter=_zeek_path,
+                parser=parse_zeek_conn_line,
+                get_state=state.db.get_ingest_state,
+                set_state=state.db.set_ingest_state,
+                handle_event=state.handle_event,
+                max_line_bytes=cfg.ingest.zeek.max_line_bytes,
+            )
+            state.ingestors.append(zeek_tailer)
+            state.ingest_tasks.append(asyncio.create_task(zeek_tailer.run()))
         try:
             yield
         finally:
+            for ingestor in state.ingestors:
+                await ingestor.stop()
+            await asyncio.gather(*state.ingest_tasks, return_exceptions=True)
             await asyncio.gather(
                 *(listener.stop() for listener in state.listeners),
                 return_exceptions=True,
@@ -85,6 +128,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             "tcp_listeners": [asdict(listener) for listener in cfg.tcp_listeners],
             "http_listener": asdict(cfg.http_listener),
             "privacy": asdict(cfg.privacy),
+            "ingest": asdict(cfg.ingest),
         }
 
     @app.get("/api/events", dependencies=[Depends(require_api_key)])
@@ -95,6 +139,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         src_ip: str | None = None,
         event_type: str | None = None,
         listener: str | None = None,
+        event_id: int | None = Query(default=None, ge=1),
     ) -> dict[str, Any]:
         rows = await state.db.query_events(
             {
@@ -104,6 +149,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
                 "src_ip": src_ip,
                 "event_type": event_type,
                 "listener": listener,
+                "event_id": event_id,
             }
         )
         return {"items": rows, "count": len(rows)}
