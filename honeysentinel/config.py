@@ -103,6 +103,11 @@ class RulesConfig:
 
 
 @dataclass(slots=True)
+class NoiseConfig:
+    allowlist: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class TcpListenerConfig:
     name: str
     host: str
@@ -128,6 +133,7 @@ class AppConfig:
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     rules: RulesConfig = field(default_factory=RulesConfig)
+    noise: NoiseConfig = field(default_factory=NoiseConfig)
     tcp_listeners: list[TcpListenerConfig] = field(default_factory=list)
     http_listener: HttpListenerConfig = field(default_factory=HttpListenerConfig)
 
@@ -179,6 +185,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     )
 
     rules = RulesConfig(**raw.get("rules", {}))
+    noise = NoiseConfig(**raw.get("noise", {}))
 
     listeners: list[TcpListenerConfig] = []
     for entry in raw.get("listeners", {}).get("tcp", []):
@@ -196,6 +203,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         alerts=alerts,
         ingest=ingest,
         rules=rules,
+        noise=noise,
         tcp_listeners=listeners,
         http_listener=http_listener,
     )

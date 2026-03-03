@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -20,6 +22,9 @@ from honeysentinel.listeners.tcp import TcpListener
 from honeysentinel.rules import RuleEngine
 
 
+logger = logging.getLogger(__name__)
+
+
 class AppState:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -29,12 +34,46 @@ class AppState:
         self.listeners: list[TcpListener | RawHttpListener] = []
         self.ingest_tasks: list[asyncio.Task[None]] = []
         self.ingestors: list[JsonLineTailer] = []
+        self.allowlist = self._build_allowlist(config.noise.allowlist)
+
+    def _build_allowlist(self, entries: list[str]) -> list[Any]:
+        parsed: list[Any] = []
+        for entry in entries:
+            candidate = str(entry).strip()
+            if not candidate:
+                continue
+            try:
+                if "/" in candidate:
+                    parsed.append(ipaddress.ip_network(candidate, strict=False))
+                else:
+                    parsed.append(ipaddress.ip_address(candidate))
+            except ValueError:
+                logger.warning("Invalid allowlist entry ignored: %s", candidate)
+        return parsed
+
+    def _is_allowlisted(self, src_ip: str) -> bool:
+        if not self.allowlist:
+            return False
+        try:
+            addr = ipaddress.ip_address(src_ip)
+        except ValueError:
+            return False
+        for allowed in self.allowlist:
+            if isinstance(allowed, (ipaddress.IPv4Address, ipaddress.IPv6Address)) and addr == allowed:
+                return True
+            if isinstance(allowed, (ipaddress.IPv4Network, ipaddress.IPv6Network)) and addr in allowed:
+                return True
+        return False
 
     async def handle_event(self, event: Event) -> None:
         event_id = await self.db.insert_event(event)
+        if self._is_allowlisted(event.src_ip):
+            return
         for alert in self.rules.evaluate(event):
             alert.context.setdefault("listener", event.listener)
             alert.context.setdefault("event_id", event_id)
+            alert.context.setdefault("dst_port", event.dst_port)
+            alert.context.setdefault("src_port", event.src_port)
             await self.alerter.send(alert)
 
 

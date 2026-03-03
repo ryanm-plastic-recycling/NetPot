@@ -25,28 +25,6 @@ def _safe_text(value: Any, max_len: int = 500) -> str:
     return text
 
 
-def format_alert_human(alert: "Alert") -> tuple[str, str]:
-    severity = str(alert.severity).upper()
-    source = _safe_text(alert.src_ip, max_len=120) or "unknown"
-    subject = f"[HoneySentinel][{severity}] {alert.rule} from {source}"
-
-    clean_context = redact_mapping(alert.context if isinstance(alert.context, dict) else {})
-    context_lines = "\n".join(
-        f"  {key}: {_safe_text(value)}" for key, value in sorted(clean_context.items())
-    ) or "  (none)"
-    body = (
-        "HoneySentinel Alert\n"
-        f"Severity: {severity}\n"
-        f"Rule: {_safe_text(alert.rule, max_len=200)}\n"
-        f"Source: {source}\n"
-        f"Time (UTC): {_safe_text(alert.ts, max_len=120)}\n"
-        f"Message: {_safe_text(alert.message)}\n\n"
-        "Context:\n"
-        f"{context_lines}"
-    )
-    return subject, body
-
-
 @dataclass(slots=True)
 class Alert:
     rule: str
@@ -78,11 +56,8 @@ class Alerter:
             return_exceptions=True,
         )
 
-    def _top_context_fields(self, payload: dict[str, Any]) -> list[tuple[str, Any]]:
-        context = payload.get("context", {})
-        if not isinstance(context, dict):
-            return []
-        clean_context = redact_mapping(context)
+    @staticmethod
+    def _top_context_fields_from_context(clean_context: dict[str, Any]) -> list[tuple[str, Any]]:
         preferred = ["listener", "dst_port", "dest_port", "event_type", "proto", "source"]
         keys = [key for key in preferred if key in clean_context]
         keys.extend(sorted(k for k in clean_context if k not in keys))
@@ -90,18 +65,36 @@ class Alerter:
 
     def _format_email(self, alert: Alert, payload: dict[str, Any]) -> EmailMessage:
         cfg = self.cfg.email
-        subject, body_text = format_alert_human(alert)
-        raw_json = _safe_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), max_len=1500)
+        clean_context = redact_mapping(alert.context if isinstance(alert.context, dict) else {})
+        listener = _safe_text(clean_context.get("listener", "unknown"), max_len=120) or "unknown"
+        dst_port = clean_context.get("dst_port", 0)
+        try:
+            dst_port = int(dst_port)
+        except (TypeError, ValueError):
+            dst_port = 0
+        top_fields = [name for name, _ in self._top_context_fields_from_context(clean_context)]
+        severity_upper = _safe_text(str(alert.severity).upper(), max_len=16)
+        severity_lower = _safe_text(str(alert.severity).lower(), max_len=16)
+        rule = _safe_text(alert.rule, max_len=200)
+        source = _safe_text(alert.src_ip, max_len=120) or "unknown"
+
         msg = EmailMessage()
-        msg["Subject"] = subject
+        msg["Subject"] = f"[HoneySentinel][{severity_upper}][{rule}] {source} -> {listener}"
         msg["From"] = cfg.from_addr
         msg["To"] = ", ".join(cfg.to_addrs)
-        body = (
-            f"{body_text}\n\n"
-            "Raw JSON (truncated):\n"
-            f"{raw_json}"
+        msg.set_content(
+            "\n".join(
+                [
+                    f"ts: {_safe_text(alert.ts, max_len=120)}",
+                    f"severity: {severity_lower}",
+                    f"rule: {rule}",
+                    f"src_ip: {source}",
+                    f"dst_port/listener: {dst_port}",
+                    f"message: {_safe_text(alert.message)}",
+                    f"top_fields: {top_fields}",
+                ]
+            )
         )
-        msg.set_content(body)
         return msg
 
     async def _send_email(self, alert: Alert, payload: dict[str, Any]) -> None:
@@ -125,11 +118,11 @@ class Alerter:
             logger.warning("SMTP alert delivery failed", exc_info=True)
 
     def _twilio_message_body(self, alert: Alert) -> str:
-        _, body_text = format_alert_human(alert)
-        compact = body_text.replace("\n\n", "\n")
-        if len(compact) > 1400:
-            return f"{compact[:1400]}…"
-        return compact
+        severity = _safe_text(str(alert.severity).upper(), max_len=16)
+        rule = _safe_text(alert.rule, max_len=64)
+        src_ip = _safe_text(alert.src_ip, max_len=120) or "unknown"
+        listener = _safe_text(alert.context.get("listener", "unknown"), max_len=64)
+        return f"HoneySentinel {severity} {rule} from {src_ip} on {listener}. ts={_safe_text(alert.ts, max_len=120)}"
 
     async def _send_twilio(self, alert: Alert, payload: dict[str, Any]) -> None:
         cfg = self.cfg.twilio
