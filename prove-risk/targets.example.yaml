@@ -1,0 +1,5 @@
+targets:
+  - name: "Finance Dashboard"
+    url: "https://finance-dashboard.example.com"
+  - name: "Ops Dashboard"
+    url: "https://ops-dashboard.example.com"
