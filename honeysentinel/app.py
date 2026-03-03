@@ -491,7 +491,7 @@ def _render_base_html(active: str) -> str:
 
             <div style="margin-top:12px;">
               <label>Raw info (read-only)</label>
-              <pre id="info" class="mono">{}</pre>
+              <pre id="info" class="mono">{{}}</pre>
             </div>
           </div>
         </div>
@@ -529,7 +529,7 @@ def _render_base_html(active: str) -> str:
             </div>
           </div>
           <label>Raw info (read-only)</label>
-          <pre id="info" class="mono">{}</pre>
+          <pre id="info" class="mono">{{}}</pre>
         </div>
       </div>
     `;
@@ -594,7 +594,7 @@ def _render_base_html(active: str) -> str:
             <div id="alertsSummary" class="hint">Loading…</div>
             <div style="margin-top:10px;">
               <label>Raw info (read-only)</label>
-              <pre id="info" class="mono">{}</pre>
+              <pre id="info" class="mono">{{}}</pre>
             </div>
           </div>
         </div>
