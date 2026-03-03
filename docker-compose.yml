@@ -3,8 +3,11 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+    env_file:
+      - path: .env
+        required: false
     volumes:
-      - ./config.example.yaml:/app/config.yaml:ro
+      - ${HONEYSENTINEL_CONFIG:-./config.example.yaml}:/app/config.yaml:ro
       - ./data:/app/data
     ports:
       - "8000:8000"
@@ -14,3 +17,4 @@ services:
       - "16379:16379"
       - "19000:19000"
       - "18080:18080"
+      - "33890:33890"

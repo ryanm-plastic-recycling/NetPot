@@ -1,6 +1,6 @@
 db_path: ./data/honeysentinel.db
 security:
-  api_key: changeme
+  api_key: "${HONEYSENTINEL_API_KEY}"
 privacy:
   store_tcp_payload_preview: false
   tcp_payload_preview_bytes: 256
@@ -40,6 +40,10 @@ ingest:
     log_dir: /opt/zeek/logs/current
     fallback_log_dir: /var/log/zeek/current
     max_line_bytes: 65536
+noise:
+  allowlist:
+    - "192.0.2.10"
+    - "198.51.100.0/24"
 rules:
   suppression_seconds: 120
   correlation_window_minutes: 10

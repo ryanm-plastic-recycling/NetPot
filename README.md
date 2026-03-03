@@ -38,6 +38,27 @@ python -m honeysentinel config.yaml
 
 API/dashboard run on `http://127.0.0.1:8000`.
 
+
+## **DO NOT PUT SECRETS IN config.yaml**
+
+Use environment variable interpolation in YAML (supported by the config loader) and keep secrets in `.env` or your secret manager.
+
+Example snippet:
+
+```yaml
+security:
+  api_key: "${HONEYSENTINEL_API_KEY}"
+alerts:
+  email:
+    username: "${SMTP_USERNAME}"
+    password: "${SMTP_PASSWORD}"
+  twilio:
+    account_sid: "${TWILIO_ACCOUNT_SID}"
+    auth_token: "${TWILIO_AUTH_TOKEN}"
+```
+
+Use `python scripts/generate_api_key.py` to create a strong API key.
+
 ## Alerts
 
 - `alerts.email`: SMTP alerting with optional STARTTLS and optional auth (`username/password` can be empty for relay).
@@ -85,3 +106,10 @@ make lint
 make test
 make run
 ```
+
+
+## Docker notes
+
+- Compose reads optional secrets from `.env` (`.env.example` provided).
+- By default, compose mounts `./config.example.yaml` into the container.
+- To use a real local config file, run with `HONEYSENTINEL_CONFIG=./config.yaml docker compose up --build`.

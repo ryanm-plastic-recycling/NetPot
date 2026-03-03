@@ -20,6 +20,7 @@ def test_load_config_expands_env_vars(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SMTP_PASSWORD", "smtp-pass")
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACENV")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "twilio-token")
+    monkeypatch.setenv("HONEYSENTINEL_API_KEY", "hs-api-key")
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
@@ -33,6 +34,12 @@ alerts:
     enabled: true
     account_sid: "${TWILIO_ACCOUNT_SID}"
     auth_token: "${TWILIO_AUTH_TOKEN}"
+security:
+  api_key: "${HONEYSENTINEL_API_KEY}"
+noise:
+  allowlist:
+    - "192.0.2.10"
+    - "198.51.100.0/24"
 listeners:
   http:
     port: 18080
@@ -46,3 +53,7 @@ listeners:
     assert cfg.alerts.email.password == "smtp-pass"
     assert cfg.alerts.twilio.account_sid == "ACENV"
     assert cfg.alerts.twilio.auth_token == "twilio-token"
+
+
+    assert cfg.security.api_key == "hs-api-key"
+    assert cfg.noise.allowlist == ["192.0.2.10", "198.51.100.0/24"]

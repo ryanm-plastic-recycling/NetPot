@@ -16,16 +16,15 @@ def test_email_formatting_contains_required_fields() -> None:
         )
     )
     alerter = Alerter(cfg)
-    msg = alerter._format_email(
-        {
-            "ts": "2026-01-01T00:00:00Z",
-            "severity": "high",
-            "rule": "portscan",
-            "src_ip": "1.2.3.4",
-            "message": "detected",
-            "context": {"listener": "ssh-decoy", "event_id": 7, "dst_port": 12222, "proto": "tcp"},
-        }
+    alert = Alert(
+        rule="portscan",
+        severity="high",
+        src_ip="1.2.3.4",
+        message="detected",
+        ts="2026-01-01T00:00:00Z",
+        context={"listener": "ssh-decoy", "event_id": 7, "dst_port": 12222, "proto": "tcp"},
     )
+    msg = alerter._format_email(alert, {"context": alert.context})
     assert isinstance(msg, EmailMessage)
     assert msg["Subject"] == "[HoneySentinel][HIGH][portscan] 1.2.3.4 -> ssh-decoy"
     body = msg.get_content()
@@ -34,7 +33,8 @@ def test_email_formatting_contains_required_fields() -> None:
     assert "rule: portscan" in body
     assert "src_ip: 1.2.3.4" in body
     assert "dst_port/listener: 12222" in body
-    assert "top_fields:" in body
+    assert "message: detected" in body
+    assert "top_fields: ['listener', 'dst_port', 'proto']" in body
 
 
 def test_send_email_uses_smtp_without_auth_if_empty_creds() -> None:
@@ -81,13 +81,21 @@ def test_twilio_message_formatting_and_threshold() -> None:
         client.post.assert_not_called()
 
         asyncio.run(
-            alerter.send(Alert("portscan", "high", "5.5.5.5", "scan", context={"listener": "tcp", "dst_port": 2222}))
+            alerter.send(
+                Alert(
+                    "portscan",
+                    "high",
+                    "5.5.5.5",
+                    "scan",
+                    ts="2026-01-01T00:00:00Z",
+                    context={"listener": "tcp", "dst_port": 2222},
+                )
+            )
         )
         client.post.assert_called_once()
         kwargs = client.post.call_args.kwargs
         assert "Messages.json" in client.post.call_args.args[0]
-        assert "HoneySentinel HIGH portscan from 5.5.5.5 on tcp." in kwargs["data"]["Body"]
-        assert "ts=" in kwargs["data"]["Body"]
+        assert kwargs["data"]["Body"] == "HoneySentinel HIGH portscan from 5.5.5.5 on tcp. ts=2026-01-01T00:00:00Z"
 
 
 def test_twilio_logs_do_not_expose_secrets(caplog) -> None:
