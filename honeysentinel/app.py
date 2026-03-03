@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -1030,11 +1029,12 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         # this will throw a clear error and we’ll adapt.
         try:
             from honeysentinel.alerting import Alert  # type: ignore
+
             alert = Alert(
+                rule="ui_test_email",
                 severity="high",
-                title="HoneySentinel Test Email",
+                src_ip="ui",
                 message=msg,
-                ts=datetime.utcnow().isoformat() + "Z",
                 context={"test": True},
             )
             if to_override:
@@ -1060,11 +1060,12 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
 
         try:
             from honeysentinel.alerting import Alert  # type: ignore
+
             alert = Alert(
+                rule="ui_test_sms",
                 severity="high",
-                title="HoneySentinel Test SMS",
+                src_ip="ui",
                 message=msg,
-                ts=datetime.utcnow().isoformat() + "Z",
                 context={"test": True},
             )
             if to_override:

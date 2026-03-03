@@ -66,10 +66,12 @@ class Alerter:
             f"[HoneySentinel][{str(payload['severity']).upper()}]"
             f"[{payload['rule']}] {payload['src_ip']} -> {listener}"
         )
+        context = payload.get("context", {})
+        to_override = context.get("to_override") if isinstance(context, dict) else None
         msg = EmailMessage()
         msg["Subject"] = subject
         msg["From"] = cfg.from_addr
-        msg["To"] = ", ".join(cfg.to_addrs)
+        msg["To"] = to_override if isinstance(to_override, str) and to_override else ", ".join(cfg.to_addrs)
         summary = str(payload.get("message", ""))[:240]
         top_fields = self._top_context_fields(payload)
         top_lines = "\n".join(f"- {key}: {value}" for key, value in top_fields) or "- (none)"
@@ -135,7 +137,10 @@ class Alerter:
         body = self._twilio_message_body(payload)
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                for to_number in cfg.to_numbers:
+                context = payload.get("context", {})
+                to_override = context.get("to_override") if isinstance(context, dict) else None
+                to_numbers = [to_override] if isinstance(to_override, str) and to_override else cfg.to_numbers
+                for to_number in to_numbers:
                     await client.post(
                         url,
                         data={"From": cfg.from_number, "To": to_number, "Body": body},
