@@ -265,6 +265,7 @@ def _render_base_html(active: str) -> str:
       <button class="btn" id="btnClose">Close</button>
     </div>
     <div class="db">
+      <div id="drawerSummary" style="margin-bottom:12px;border:1px solid var(--line);border-radius:12px;padding:10px;background:rgba(255,255,255,.04);"></div>
       <pre id="eventJson" class="mono">{{}}</pre>
     </div>
   </div>
@@ -283,6 +284,7 @@ def _render_base_html(active: str) -> str:
   const drawer = el("drawer");
   const eventJson = el("eventJson");
   const drawerSub = el("drawerSub");
+  const drawerSummary = el("drawerSummary");
   const btnClose = el("btnClose");
 
   const LS_KEY = "honeysentinel.apiKey";
@@ -320,6 +322,7 @@ def _render_base_html(active: str) -> str:
     drawer.classList.add("open");
     drawer.setAttribute("aria-hidden","false");
     drawerSub.textContent = `#${{eventObj.id}} • ${{eventObj.listener}} • ${{eventObj.event_type}}`;
+    renderDrawerSummary(eventObj);
     eventJson.textContent = JSON.stringify(eventObj, null, 2);
   }}
 
@@ -334,6 +337,44 @@ def _render_base_html(active: str) -> str:
 
   function escapeHtml(s) {{
     return String(s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+  }}
+
+
+  function pickValue(obj, keys){{
+    for (const key of keys) {{
+      const val = obj && obj[key];
+      if (val !== undefined && val !== null && String(val).trim() !== "") return val;
+    }}
+    return "—";
+  }}
+
+  function eventSummaryText(ev){{
+    const rawSeverity = pickValue(ev.data || {{}}, ["severity", "alert_severity", "level"]);
+    const severity = rawSeverity === "—" ? "INFO" : String(rawSeverity).toUpperCase();
+    const pathOrPort = String(pickValue(ev.data || {{}}, ["path", "http_path", "url", "uri", "dst_port", "port", "service", "target_port"]));
+    const src = `${{ev.src_ip || "—"}}:${{ev.src_port ?? "—"}}`;
+    return `${{severity}} • ${{ev.event_type || "event"}} • ${{pathOrPort}} • ${{src}}`;
+  }}
+
+  function renderDrawerSummary(ev){{
+    if (!drawerSummary) return;
+    const data = ev.data || {{}};
+    const src = `${{ev.src_ip || "—"}}:${{ev.src_port ?? "—"}}`;
+    const pathPort = pickValue(data, ["path", "http_path", "url", "uri", "dst_port", "port", "service", "target_port"]);
+    const ruleHit = pickValue(data, ["rule", "rule_name", "signature", "matched_rule"]);
+    const msg = ev.message || pickValue(data, ["message", "summary", "note"]);
+    drawerSummary.innerHTML = `
+      <div style="font-weight:700;margin-bottom:8px;">Summary</div>
+      <div class="hint" style="margin:0;">
+        <div><b>Time:</b> ${{escapeHtml(ev.ts || "—")}}</div>
+        <div><b>Listener:</b> ${{escapeHtml(ev.listener || "—")}}</div>
+        <div><b>Type:</b> ${{escapeHtml(ev.event_type || "—")}}</div>
+        <div><b>Source:</b> ${{escapeHtml(src)}}</div>
+        <div><b>Path/Port:</b> ${{escapeHtml(pathPort)}}</div>
+        <div><b>Rule hit:</b> ${{escapeHtml(ruleHit)}}</div>
+        <div><b>Message:</b> ${{escapeHtml(String(msg || "—"))}}</div>
+      </div>
+    `;
   }}
 
   function toLocalMidnight(d) {{
@@ -553,8 +594,6 @@ def _render_base_html(active: str) -> str:
             <div class="two">
               <div>
                 <label>Test Email</label>
-                <input id="emailTo" placeholder="to@example.com (optional; defaults to config to_addrs)" />
-                <div style="height:10px;"></div>
                 <textarea id="emailMsg" rows="4" placeholder="Message (optional)"></textarea>
                 <div style="height:10px;"></div>
                 <button class="btn primary" id="btnTestEmail">Send Test Email</button>
@@ -564,8 +603,6 @@ def _render_base_html(active: str) -> str:
 
               <div>
                 <label>Test SMS (Twilio)</label>
-                <input id="smsTo" placeholder="+15551234567 (optional; defaults to config to_numbers)" />
-                <div style="height:10px;"></div>
                 <textarea id="smsMsg" rows="4" placeholder="Message (optional)"></textarea>
                 <div style="height:10px;"></div>
                 <button class="btn primary" id="btnTestSms">Send Test SMS</button>
@@ -722,7 +759,7 @@ def _render_base_html(active: str) -> str:
 
     tbody.innerHTML = items.map(ev => {{
       const src = `${{ev.src_ip}}:${{ev.src_port}}`;
-      const msg = ev.message || "";
+      const msg = eventSummaryText(ev);
       const ts = ev.ts || "";
       return `
         <tr data-id="${{ev.id}}">
@@ -750,9 +787,8 @@ def _render_base_html(active: str) -> str:
     const out = document.getElementById("emailRes");
     if (out) out.textContent = "";
     if (errEl) errEl.textContent = "";
-    const to = (document.getElementById("emailTo")?.value || "").trim();
     const msg = (document.getElementById("emailMsg")?.value || "").trim();
-    const payload = {{ to, message: msg }};
+    const payload = {{ message: msg }};
     const res = await apiFetch("/api/alerts/test/email", {{
       method: "POST",
       headers: {{ "Content-Type": "application/json" }},
@@ -766,9 +802,8 @@ def _render_base_html(active: str) -> str:
     const out = document.getElementById("smsRes");
     if (out) out.textContent = "";
     if (errEl) errEl.textContent = "";
-    const to = (document.getElementById("smsTo")?.value || "").trim();
     const msg = (document.getElementById("smsMsg")?.value || "").trim();
-    const payload = {{ to, message: msg }};
+    const payload = {{ message: msg }};
     const res = await apiFetch("/api/alerts/test/twilio", {{
       method: "POST",
       headers: {{ "Content-Type": "application/json" }},
@@ -1014,14 +1049,12 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     async def test_email(payload: dict[str, Any]) -> JSONResponse:
         """
         payload:
-          - to: optional string
           - message: optional string
         """
         cfg_alerts = state.config.alerts
         if not getattr(cfg_alerts.email, "enabled", False):
             raise HTTPException(status_code=400, detail="Email alerts are disabled in config.yaml (alerts.email.enabled=false).")
 
-        to_override = (payload.get("to") or "").strip()
         msg = (payload.get("message") or "").strip() or "HoneySentinel test email."
 
         # Build a minimal "alert-like" object that Alerter can send.
@@ -1035,12 +1068,10 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
                 severity="high",
                 src_ip="ui",
                 message=msg,
-                context={"test": True},
+                context={"test": True, "channel": "email"},
             )
-            if to_override:
-                alert.context["to_override"] = to_override
             await state.alerter.send(alert)
-            return JSONResponse({"ok": True, "sent": True, "to_override": to_override or None})
+            return JSONResponse({"ok": True, "sent": True})
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Email test failed: {e!s}")
 
@@ -1048,14 +1079,12 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     async def test_twilio(payload: dict[str, Any]) -> JSONResponse:
         """
         payload:
-          - to: optional string
           - message: optional string
         """
         cfg_alerts = state.config.alerts
         if not getattr(cfg_alerts.twilio, "enabled", False):
             raise HTTPException(status_code=400, detail="Twilio alerts are disabled in config.yaml (alerts.twilio.enabled=false).")
 
-        to_override = (payload.get("to") or "").strip()
         msg = (payload.get("message") or "").strip() or "HoneySentinel test SMS."
 
         try:
@@ -1066,12 +1095,10 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
                 severity="high",
                 src_ip="ui",
                 message=msg,
-                context={"test": True},
+                context={"test": True, "channel": "sms"},
             )
-            if to_override:
-                alert.context["to_override"] = to_override
             await state.alerter.send(alert)
-            return JSONResponse({"ok": True, "sent": True, "to_override": to_override or None})
+            return JSONResponse({"ok": True, "sent": True})
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Twilio test failed: {e!s}")
 

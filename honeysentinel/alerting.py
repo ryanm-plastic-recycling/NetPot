@@ -18,6 +18,35 @@ _SEVERITY_ORDER = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 logger = logging.getLogger(__name__)
 
 
+def _safe_text(value: Any, max_len: int = 500) -> str:
+    text = str(value).replace("\n", " ").replace("\r", " ").strip()
+    if len(text) > max_len:
+        return f"{text[:max_len]}…"
+    return text
+
+
+def format_alert_human(alert: "Alert") -> tuple[str, str]:
+    severity = str(alert.severity).upper()
+    source = _safe_text(alert.src_ip, max_len=120) or "unknown"
+    subject = f"[HoneySentinel][{severity}] {alert.rule} from {source}"
+
+    clean_context = redact_mapping(alert.context if isinstance(alert.context, dict) else {})
+    context_lines = "\n".join(
+        f"  {key}: {_safe_text(value)}" for key, value in sorted(clean_context.items())
+    ) or "  (none)"
+    body = (
+        "HoneySentinel Alert\n"
+        f"Severity: {severity}\n"
+        f"Rule: {_safe_text(alert.rule, max_len=200)}\n"
+        f"Source: {source}\n"
+        f"Time (UTC): {_safe_text(alert.ts, max_len=120)}\n"
+        f"Message: {_safe_text(alert.message)}\n\n"
+        "Context:\n"
+        f"{context_lines}"
+    )
+    return subject, body
+
+
 @dataclass(slots=True)
 class Alert:
     rule: str
@@ -42,8 +71,8 @@ class Alerter:
             "context": alert.context,
         }
         await asyncio.gather(
-            self._send_email(payload),
-            self._send_twilio(payload),
+            self._send_email(alert, payload),
+            self._send_twilio(alert, payload),
             self._send_webhook(payload),
             self._send_syslog(payload),
             return_exceptions=True,
@@ -59,42 +88,28 @@ class Alerter:
         keys.extend(sorted(k for k in clean_context if k not in keys))
         return [(key, clean_context[key]) for key in keys[:3]]
 
-    def _format_email(self, payload: dict[str, Any]) -> EmailMessage:
+    def _format_email(self, alert: Alert, payload: dict[str, Any]) -> EmailMessage:
         cfg = self.cfg.email
-        listener = str(payload.get("context", {}).get("listener", "unknown"))
-        subject = (
-            f"[HoneySentinel][{str(payload['severity']).upper()}]"
-            f"[{payload['rule']}] {payload['src_ip']} -> {listener}"
-        )
-        context = payload.get("context", {})
-        to_override = context.get("to_override") if isinstance(context, dict) else None
+        subject, body_text = format_alert_human(alert)
+        raw_json = _safe_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), max_len=1500)
         msg = EmailMessage()
         msg["Subject"] = subject
         msg["From"] = cfg.from_addr
-        msg["To"] = to_override if isinstance(to_override, str) and to_override else ", ".join(cfg.to_addrs)
-        summary = str(payload.get("message", ""))[:240]
-        top_fields = self._top_context_fields(payload)
-        top_lines = "\n".join(f"- {key}: {value}" for key, value in top_fields) or "- (none)"
+        msg["To"] = ", ".join(cfg.to_addrs)
         body = (
-            f"ts: {payload['ts']}\n"
-            f"severity: {payload['severity']}\n"
-            f"rule: {payload['rule']}\n"
-            f"src_ip: {payload['src_ip']}\n"
-            f"listener: {listener}\n"
-            f"dst_port/listener: {payload.get('context', {}).get('dst_port', listener)}\n"
-            f"summary: {summary}\n"
-            "top_fields:\n"
-            f"{top_lines}\n"
+            f"{body_text}\n\n"
+            "Raw JSON (truncated):\n"
+            f"{raw_json}"
         )
         msg.set_content(body)
         return msg
 
-    async def _send_email(self, payload: dict[str, Any]) -> None:
+    async def _send_email(self, alert: Alert, payload: dict[str, Any]) -> None:
         cfg = self.cfg.email
         if not (cfg.enabled and cfg.smtp_host and cfg.to_addrs):
             return
 
-        message = self._format_email(payload)
+        message = self._format_email(alert, payload)
 
         def _send() -> None:
             with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=5) as server:
@@ -109,15 +124,14 @@ class Alerter:
         except Exception:
             logger.warning("SMTP alert delivery failed", exc_info=True)
 
-    def _twilio_message_body(self, payload: dict[str, Any]) -> str:
-        listener = str(payload.get("context", {}).get("listener", "unknown"))
-        headline = (
-            f"HoneySentinel {str(payload['severity']).upper()} {payload['rule']} "
-            f"from {payload['src_ip']} on {listener}."
-        )
-        return f"{headline}\nts={payload['ts']}"
+    def _twilio_message_body(self, alert: Alert) -> str:
+        _, body_text = format_alert_human(alert)
+        compact = body_text.replace("\n\n", "\n")
+        if len(compact) > 1400:
+            return f"{compact[:1400]}…"
+        return compact
 
-    async def _send_twilio(self, payload: dict[str, Any]) -> None:
+    async def _send_twilio(self, alert: Alert, payload: dict[str, Any]) -> None:
         cfg = self.cfg.twilio
         if not (
             cfg.enabled
@@ -134,13 +148,10 @@ class Alerter:
             return
 
         url = f"https://api.twilio.com/2010-04-01/Accounts/{cfg.account_sid}/Messages.json"
-        body = self._twilio_message_body(payload)
+        body = self._twilio_message_body(alert)
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                context = payload.get("context", {})
-                to_override = context.get("to_override") if isinstance(context, dict) else None
-                to_numbers = [to_override] if isinstance(to_override, str) and to_override else cfg.to_numbers
-                for to_number in to_numbers:
+                for to_number in cfg.to_numbers:
                     await client.post(
                         url,
                         data={"From": cfg.from_number, "To": to_number, "Body": body},
