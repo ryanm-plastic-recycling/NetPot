@@ -7,22 +7,22 @@ privacy:
 alerts:
   email:
     enabled: false
-    smtp_host: smtp.example.org
+    smtp_host: smtp.example.com
     smtp_port: 587
-    username: ""
-    password: ""
-    from_addr: honeysentinel@example.org
+    username: "${SMTP_USERNAME}"
+    password: "${SMTP_PASSWORD}"
+    from_addr: "honeysentinel@example.com"
     to_addrs:
-      - soc@example.org
+      - "security@example.com"
     use_starttls: true
   twilio:
     enabled: false
-    account_sid: ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-    auth_token: your_auth_token
+    account_sid: "${TWILIO_ACCOUNT_SID}"
+    auth_token: "${TWILIO_AUTH_TOKEN}"
     from_number: "+15551234567"
     to_numbers:
       - "+15557654321"
-    min_severity: high
+    min_severity: "high"
   webhook:
     enabled: false
     url: ""

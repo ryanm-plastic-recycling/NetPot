@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+_ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass(slots=True)
@@ -137,7 +141,17 @@ def _require_unprivileged(port: int) -> int:
 def load_config(path: str | Path) -> AppConfig:
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    return parse_config(raw)
+    return parse_config(_expand_env_vars(raw))
+
+
+def _expand_env_vars(value: Any) -> Any:
+    if isinstance(value, str):
+        return _ENV_VAR_PATTERN.sub(lambda m: os.environ.get(m.group(1), ""), value)
+    if isinstance(value, list):
+        return [_expand_env_vars(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _expand_env_vars(v) for k, v in value.items()}
+    return value
 
 
 def parse_config(raw: dict[str, Any]) -> AppConfig:
