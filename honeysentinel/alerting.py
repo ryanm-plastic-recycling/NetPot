@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import smtplib
 import socket
 from dataclasses import dataclass, field
@@ -11,9 +12,10 @@ from typing import Any
 import httpx
 
 from honeysentinel.config import AlertsConfig
-from honeysentinel.util import utc_now_iso
+from honeysentinel.util import redact_mapping, utc_now_iso
 
 _SEVERITY_ORDER = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -47,22 +49,40 @@ class Alerter:
             return_exceptions=True,
         )
 
+    def _top_context_fields(self, payload: dict[str, Any]) -> list[tuple[str, Any]]:
+        context = payload.get("context", {})
+        if not isinstance(context, dict):
+            return []
+        clean_context = redact_mapping(context)
+        preferred = ["listener", "dst_port", "dest_port", "event_type", "proto", "source"]
+        keys = [key for key in preferred if key in clean_context]
+        keys.extend(sorted(k for k in clean_context if k not in keys))
+        return [(key, clean_context[key]) for key in keys[:3]]
+
     def _format_email(self, payload: dict[str, Any]) -> EmailMessage:
         cfg = self.cfg.email
         listener = str(payload.get("context", {}).get("listener", "unknown"))
-        event_id = payload.get("context", {}).get("event_id")
-        event_path = f"/api/events?event_id={event_id}" if event_id is not None else "/api/events"
+        subject = (
+            f"[HoneySentinel][{str(payload['severity']).upper()}]"
+            f"[{payload['rule']}] {payload['src_ip']} -> {listener}"
+        )
         msg = EmailMessage()
-        msg["Subject"] = f"HoneySentinel [{payload['severity']}] {payload['rule']}"
+        msg["Subject"] = subject
         msg["From"] = cfg.from_addr
         msg["To"] = ", ".join(cfg.to_addrs)
+        summary = str(payload.get("message", ""))[:240]
+        top_fields = self._top_context_fields(payload)
+        top_lines = "\n".join(f"- {key}: {value}" for key, value in top_fields) or "- (none)"
         body = (
-            f"Severity: {payload['severity']}\n"
-            f"Rule: {payload['rule']}\n"
-            f"Source IP: {payload['src_ip']}\n"
-            f"Listener: {listener}\n"
-            f"Message: {payload['message']}\n"
-            f"Dashboard event view: {event_path}\n"
+            f"ts: {payload['ts']}\n"
+            f"severity: {payload['severity']}\n"
+            f"rule: {payload['rule']}\n"
+            f"src_ip: {payload['src_ip']}\n"
+            f"listener: {listener}\n"
+            f"dst_port/listener: {payload.get('context', {}).get('dst_port', listener)}\n"
+            f"summary: {summary}\n"
+            "top_fields:\n"
+            f"{top_lines}\n"
         )
         msg.set_content(body)
         return msg
@@ -82,14 +102,18 @@ class Alerter:
                     server.login(cfg.username, cfg.password)
                 server.send_message(message)
 
-        await asyncio.to_thread(_send)
+        try:
+            await asyncio.to_thread(_send)
+        except Exception:
+            logger.warning("SMTP alert delivery failed", exc_info=True)
 
     def _twilio_message_body(self, payload: dict[str, Any]) -> str:
         listener = str(payload.get("context", {}).get("listener", "unknown"))
-        return (
-            f"HoneySentinel {payload['severity'].upper()}: {payload['rule']} from "
-            f"{payload['src_ip']} on {listener}."
+        headline = (
+            f"HoneySentinel {str(payload['severity']).upper()} {payload['rule']} "
+            f"from {payload['src_ip']} on {listener}."
         )
+        return f"{headline}\nts={payload['ts']}"
 
     async def _send_twilio(self, payload: dict[str, Any]) -> None:
         cfg = self.cfg.twilio
@@ -109,13 +133,16 @@ class Alerter:
 
         url = f"https://api.twilio.com/2010-04-01/Accounts/{cfg.account_sid}/Messages.json"
         body = self._twilio_message_body(payload)
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            for to_number in cfg.to_numbers:
-                await client.post(
-                    url,
-                    data={"From": cfg.from_number, "To": to_number, "Body": body},
-                    auth=(cfg.account_sid, cfg.auth_token),
-                )
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                for to_number in cfg.to_numbers:
+                    await client.post(
+                        url,
+                        data={"From": cfg.from_number, "To": to_number, "Body": body},
+                        auth=(cfg.account_sid, cfg.auth_token),
+                    )
+        except Exception:
+            logger.warning("Twilio alert delivery failed", exc_info=True)
 
     async def _send_webhook(self, payload: dict[str, Any]) -> None:
         cfg = self.cfg.webhook

@@ -43,6 +43,21 @@ API/dashboard run on `http://127.0.0.1:8000`.
 - `alerts.email`: SMTP alerting with optional STARTTLS and optional auth (`username/password` can be empty for relay).
 - `alerts.twilio`: SMS alerting via Twilio REST API. By default only severities `>= high` send (`min_severity` configurable).
 - `rules.suppression_seconds`: deduplicates repeat alerts for the same rule + source IP.
+
+## Alert env vars (recommended)
+
+Keep secrets out of `config.yaml` by exporting env vars referenced as `${VAR}` in YAML:
+
+```bash
+export SMTP_USERNAME="smtp-user"
+export SMTP_PASSWORD="smtp-password"
+export TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+export TWILIO_AUTH_TOKEN="your-twilio-auth-token"
+```
+
+`alerts.twilio.min_severity` is a threshold (`low < medium < high < critical`).
+Defaults stay quiet/safe: Twilio disabled and threshold set to `high`, plus rule suppression reduces duplicate notifications.
+
 - Correlation rule raises severity one level and emits `correlated_alert` when honeypot activity and Suricata alerts share `src_ip` inside `rules.correlation_window_minutes`.
 - RDP attempt rule: any RDP connection attempt triggers `medium` severity (`rdp_attempt`), and repeated attempts in the burst window escalate to `high` (`rdp_repeated`).
 

@@ -20,4 +20,6 @@ HoneySentinel is a defensive honeypot. Deploy safely:
 
 - Email and Twilio integrations are notification-only and intended for defensive operations.
 - Twilio sends only high/critical by default via `alerts.twilio.min_severity`.
+- SMS alerts can incur carrier/Twilio costs; keep severity thresholds conservative and recipient lists minimal.
+- Keep suppression enabled and tune thresholds/rate limits to avoid notification floods.
 - Suppression (`rules.suppression_seconds`) reduces duplicate notifications for repetitive sources.
