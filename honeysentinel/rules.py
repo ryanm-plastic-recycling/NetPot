@@ -135,7 +135,7 @@ class RuleEngine:
                 return [
                     Alert(
                         "http_paths",
-                        "medium",
+                        "high",
                         event.src_ip,
                         f"Suspicious HTTP path {path}",
                         context={"listener": event.listener},
