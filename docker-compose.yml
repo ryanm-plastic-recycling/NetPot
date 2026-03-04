@@ -4,8 +4,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     env_file:
-      - path: .env
-        required: false
+      - .env
     volumes:
       - ${HONEYSENTINEL_CONFIG:-./config.example.yaml}:/app/config.yaml:ro
       - ./data:/app/data

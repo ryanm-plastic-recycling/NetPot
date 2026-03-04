@@ -65,15 +65,35 @@ Use `python scripts/generate_api_key.py` to create a strong API key.
 - `alerts.twilio`: SMS alerting via Twilio REST API. By default only severities `>= high` send (`min_severity` configurable).
 - `rules.suppression_seconds`: deduplicates repeat alerts for the same rule + source IP.
 
+## Environment variables / .env
+
+HoneySentinel supports `${ENV_VAR}` expansion in `config.yaml`. Values come from process environment, and at startup HoneySentinel now loads a local `.env` file automatically (or `DOTENV_PATH` if set).
+
+`.env` formatting tips:
+
+- Avoid quotes unless the value truly needs them.
+- Use `KEY=value` with no spaces around `=`.
+- Keep `.env` out of Git (`.env.example` is provided as a safe template).
+
+Variables used by default config patterns:
+
+- `HONEYSENTINEL_API_KEY`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+
+If an alert channel is enabled but required credentials are still empty after expansion, HoneySentinel logs a warning so you can quickly verify env loading.
+
 ## Alert env vars (recommended)
 
 Keep secrets out of `config.yaml` by exporting env vars referenced as `${VAR}` in YAML:
 
 ```bash
-export SMTP_USERNAME="smtp-user"
-export SMTP_PASSWORD="smtp-password"
-export TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-export TWILIO_AUTH_TOKEN="your-twilio-auth-token"
+export SMTP_USERNAME=smtp-user
+export SMTP_PASSWORD=smtp-password
+export TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export TWILIO_AUTH_TOKEN=your-twilio-auth-token
 ```
 
 `alerts.twilio.min_severity` is a threshold (`low < medium < high < critical`).
