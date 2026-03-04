@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from honeysentinel.alerting import Alerter
 from honeysentinel.config import AppConfig, load_config
 from honeysentinel.db import Database
-from honeysentinel.events import Event
+from honeysentinel.events import EVENT_DISPOSITIONS, Event, normalize_disposition
 from honeysentinel.ingest import JsonLineTailer, parse_suricata_eve_line, parse_zeek_conn_line
 from honeysentinel.listeners.http import RawHttpListener
 from honeysentinel.listeners.tcp import TcpListener
@@ -27,6 +27,45 @@ from honeysentinel.rules import RuleEngine
 
 
 logger = logging.getLogger(__name__)
+
+
+def _error_response(status_code: int, error_code: str, message: str, details: dict[str, Any] | None = None) -> JSONResponse:
+    payload: dict[str, Any] = {"ok": False, "error": error_code, "message": message}
+    if details:
+        payload["details"] = details
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+def _normalize_target_url(url: str) -> str:
+    candidate = url.strip()
+    if not candidate:
+        raise ValueError("Target URL is required.")
+    parsed = urlparse(candidate)
+    if not parsed.scheme:
+        candidate = f"http://{candidate}"
+        parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL must include a valid hostname and optional port.")
+    return candidate
+
+
+def _parse_disposition_filters(values: list[str] | None, include_all: bool) -> list[str] | None:
+    if include_all:
+        return None
+    tokens: list[str] = []
+    for raw in values or []:
+        for part in raw.split(","):
+            cleaned = part.strip()
+            if cleaned:
+                tokens.append(normalize_disposition(cleaned))
+    if not tokens:
+        return ["OPEN"]
+    if "ALL" in tokens:
+        return None
+    invalid = sorted({v for v in tokens if v not in EVENT_DISPOSITIONS})
+    if invalid:
+        raise ValueError(f"Invalid disposition value(s): {', '.join(invalid)}")
+    return sorted(set(tokens))
 
 
 def _load_prove_risk_module(module_name: str) -> Any:
@@ -372,8 +411,11 @@ def _render_base_html(active: str) -> str:
       try {{ data = await r.text(); }} catch {{ data = null; }}
     }}
     if (!r.ok) {{
-      const detail = data && data.detail ? data.detail : (typeof data === "string" ? data : "");
-      throw new Error(`${{r.status}} ${{r.statusText}}${{detail ? " — " + detail : ""}}`);
+      const payload = (typeof data === "object" && data !== null) ? data : null;
+      const err = new Error((payload && (payload.message || payload.detail)) || `${{r.status}} ${{r.statusText}}`);
+      err.status = r.status;
+      err.payload = payload;
+      throw err;
     }}
     return data;
   }}
@@ -529,6 +571,20 @@ def _render_base_html(active: str) -> str:
               </div>
             </div>
 
+            <div class="row" style="margin-bottom:10px;">
+              <div class="field">
+                <label>Disposition filter</label>
+                <select id="dispositionFilter" multiple size="6"></select>
+              </div>
+              <div class="field small">
+                <label>Quick filter</label>
+                <div class="chips">
+                  <div class="chip" id="openOnlyChip">Open only</div>
+                  <div class="chip" id="allDispositionsChip">All</div>
+                </div>
+              </div>
+            </div>
+
             <div class="chips" style="margin: 8px 0 12px;">
               <div class="chip" data-since="5">Last 5m</div>
               <div class="chip" data-since="15">Last 15m</div>
@@ -552,11 +608,12 @@ def _render_base_html(active: str) -> str:
                     <th style="width:160px;">Listener</th>
                     <th style="width:160px;">Type</th>
                     <th style="width:190px;">Source</th>
+                    <th style="width:170px;">Disposition</th>
                     <th>Message</th>
                   </tr>
                 </thead>
                 <tbody id="tbody">
-                  <tr><td colspan="6" style="color:var(--muted);">No events loaded yet.</td></tr>
+                  <tr><td colspan="7" style="color:var(--muted);">No events loaded yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -726,6 +783,7 @@ def _render_base_html(active: str) -> str:
             </div>
             <div style="height:12px;"></div>
             <div id="err" class="err"></div>
+            <div id="testsCapabilities" class="hint"></div>
             <div id="testsOutput" class="hint">Run a test to see results.</div>
           </div>
         </div>
@@ -767,6 +825,16 @@ def _render_base_html(active: str) -> str:
     if (listenerEl) {{
       const listeners = (info.tcp_listeners || []).map(x => x.name).concat(["http_raw"]);
       setSelectOptions(listenerEl, listeners);
+    }}
+
+    const dispositionEl = document.getElementById("dispositionFilter");
+    if (dispositionEl) {{
+      dispositionEl.innerHTML = "";
+      for (const d of DISPOSITIONS) {{
+        const opt = new Option(d, d);
+        if (d === "OPEN") opt.selected = true;
+        dispositionEl.appendChild(opt);
+      }}
     }}
 
     // Alerts page summary
@@ -838,6 +906,14 @@ def _render_base_html(active: str) -> str:
     const li = listenerEl?.value || "";
     if (li) params.set("listener", li);
 
+    const dispositionEl = document.getElementById("dispositionFilter");
+    const selectedDispositions = dispositionEl ? Array.from(dispositionEl.selectedOptions).map(o => o.value) : ["OPEN"];
+    if (!selectedDispositions.length || selectedDispositions.length === DISPOSITIONS.length) {{
+      params.set("include_all", "true");
+    }} else {{
+      for (const d of selectedDispositions) params.append("disposition", d);
+    }}
+
     const data = await apiFetch("/api/events?" + params.toString());
     const items = data.items || [];
     if (countEl) countEl.textContent = String(items.length);
@@ -849,7 +925,7 @@ def _render_base_html(active: str) -> str:
     }}
 
     if (!items.length){{
-      tbody.innerHTML = `<tr><td colspan="6" style="color:var(--muted);">No events match current filters.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" style="color:var(--muted);">No events match current filters.</td></tr>`;
       return;
     }}
 
@@ -864,13 +940,42 @@ def _render_base_html(active: str) -> str:
           <td><span class="pill">${{escapeHtml(ev.listener)}}</span></td>
           <td><span class="pill">${{escapeHtml(ev.event_type)}}</span></td>
           <td class="mono">${{escapeHtml(src)}}</td>
+          <td>
+            <select class="row-disposition" data-id="${{ev.id}}">
+              ${{DISPOSITIONS.map(d => `<option value="${{d}}" ${{d === ev.disposition ? "selected" : ""}}>${{d}}</option>`).join("")}}
+            </select>
+          </td>
           <td class="msg" title="${{escapeHtml(msg)}}">${{escapeHtml(msg)}}</td>
         </tr>
       `;
     }}).join("");
 
+    for (const sel of tbody.querySelectorAll("select.row-disposition")) {{
+      sel.addEventListener("click", (e) => e.stopPropagation());
+      sel.addEventListener("change", async () => {{
+        const id = Number(sel.getAttribute("data-id"));
+        const ev = items.find(x => x.id === id);
+        if (!ev) return;
+        const previous = ev.disposition;
+        const next = sel.value;
+        ev.disposition = next;
+        sel.disabled = true;
+        try {{
+          await apiFetch(`/api/events/${{id}}`, {{ method:"PATCH", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{ disposition: next }}) }});
+        }} catch (err) {{
+          ev.disposition = previous;
+          sel.value = previous;
+          const errEl = document.getElementById("err");
+          if (errEl) errEl.textContent = `Failed to update disposition: ${{err.message || err}}`;
+        }} finally {{
+          sel.disabled = false;
+        }}
+      }});
+    }}
+
     for (const tr of tbody.querySelectorAll("tr[data-id]")){{
-      tr.addEventListener("click", () => {{
+      tr.addEventListener("click", (event) => {{
+        if (event.target && event.target.closest("select.row-disposition")) return;
         const id = Number(tr.getAttribute("data-id"));
         const ev = items.find(x => x.id === id);
         if (ev) openDrawer(ev);
@@ -997,9 +1102,57 @@ def _render_base_html(active: str) -> str:
     setAuto();
   }}
 
+  function normalizeTargetInput() {{
+    const input = document.getElementById("testUrl");
+    const raw = (input?.value || "").trim();
+    if (!raw) throw new Error("Target URL is required.");
+    if (!/^https?:\/\//i.test(raw)) {{
+      const normalized = `http://${{raw}}`;
+      if (input) input.value = normalized;
+      return {{ raw, normalized, hinted: true }};
+    }}
+    return {{ raw, normalized: raw, hinted: false }};
+  }}
+
+  function renderFriendlyError(err) {{
+    const out = document.getElementById("testsOutput");
+    if (!out) return;
+    const payload = err?.payload || {{}};
+    const code = payload.error || payload.detail || "REQUEST_FAILED";
+    const message = payload.message || err.message || "Request failed";
+    let fix = "Check target URL and service reachability.";
+    if (code === "TLS_HTTP_TARGET") fix = "Use an https:// URL for TLS expiry tests.";
+    if (code === "ZAP_DISABLED") fix = "Enable tests.enable_zap in config.yaml to run this test.";
+    if (code === "INVALID_TARGET") fix = "Use a valid hostname (example: http://example.com).";
+    out.innerHTML = `<div><b>${{code}}</b></div><div>${{escapeHtml(message)}}</div><div style="margin-top:6px;">Suggested fix: ${{escapeHtml(fix)}}</div>`;
+  }}
+
+  async function loadTestsCapabilities() {{
+    if (ACTIVE !== "tests") return;
+    testsCapabilities = await apiFetch("/api/tests/capabilities");
+    const zapBtn = document.getElementById("btnRunZap");
+    const help = document.getElementById("testsCapabilities");
+    if (zapBtn && testsCapabilities && testsCapabilities.enable_zap === false) {{
+      zapBtn.disabled = true;
+      zapBtn.title = "Disabled by config (tests.enable_zap=false)";
+    }}
+    if (help) {{
+      help.textContent = testsCapabilities.enable_zap ? "" : "Disabled by config (tests.enable_zap=false).";
+    }}
+  }}
+
   async function runTestsApi(path) {{
-    const url = (document.getElementById("testUrl")?.value || "").trim();
-    return apiFetch(path, {{ method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify({{ url }}) }});
+    const normalized = normalizeTargetInput();
+    if (path.endsWith("/tls") && !/^https:\/\//i.test(normalized.normalized)) {{
+      const err = new Error("TLS test requires an https:// target (got http://).");
+      err.payload = {{ error: "TLS_HTTP_TARGET", message: err.message }};
+      throw err;
+    }}
+    if (normalized.hinted) {{
+      const out = document.getElementById("testsOutput");
+      if (out) out.textContent = `No scheme provided; using ${{normalized.normalized}}`;
+    }}
+    return apiFetch(path, {{ method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify({{ url: normalized.normalized }}) }});
   }}
 
   function badge(ok){{ return `<span class="pill" style="color:${{ok ? "var(--good)" : "var(--bad)"}}">${{ok ? "PASS" : "FAIL"}}</span>`; }}
@@ -1035,17 +1188,22 @@ def _render_base_html(active: str) -> str:
   }}
 
   if (ACTIVE === "tests") {{
+    loadTestsCapabilities().catch(() => {{}});
     document.getElementById("btnRunHeaders")?.addEventListener("click", async () => {{
       try {{ const r = await runTestsApi("/api/tests/headers"); renderTestOutput(r, "headers"); }}
-      catch(e){{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}
+      catch(e){{ renderFriendlyError(e); }}
     }});
     document.getElementById("btnRunTls")?.addEventListener("click", async () => {{
       try {{ const r = await runTestsApi("/api/tests/tls"); renderTestOutput(r, "tls"); }}
-      catch(e){{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}
+      catch(e){{ renderFriendlyError(e); }}
     }});
     document.getElementById("btnRunZap")?.addEventListener("click", async () => {{
+      if (testsCapabilities && testsCapabilities.enable_zap === false) {{
+        renderFriendlyError({{ payload: {{ error: "ZAP_DISABLED", message: "Disabled by config (tests.enable_zap=false)" }} }});
+        return;
+      }}
       try {{ const r = await runTestsApi("/api/tests/zap-baseline"); renderTestOutput(r, "zap"); }}
-      catch(e){{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}
+      catch(e){{ renderFriendlyError(e); }}
     }});
     document.getElementById("btnTestEmail")?.addEventListener("click", () => testEmail().then(r => renderTestOutput(r, "email")).catch(e => {{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}));
     document.getElementById("btnTestSms")?.addEventListener("click", () => testSms().then(r => renderTestOutput(r, "sms")).catch(e => {{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}));
@@ -1176,7 +1334,19 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
         event_type: str | None = None,
         listener: str | None = None,
         event_id: int | None = Query(default=None, ge=1),
-    ) -> dict[str, Any]:
+        disposition: list[str] | None = Query(default=None),
+        include_all: bool = Query(default=False),
+    ) -> JSONResponse:
+        try:
+            dispositions = _parse_disposition_filters(disposition, include_all)
+        except ValueError as exc:
+            return _error_response(
+                400,
+                "INVALID_DISPOSITION",
+                str(exc),
+                {"allowed": list(EVENT_DISPOSITIONS) + ["ALL"]},
+            )
+
         rows = await state.db.query_events(
             {
                 "limit": limit,
@@ -1186,44 +1356,79 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
                 "event_type": event_type,
                 "listener": listener,
                 "event_id": event_id,
+                "dispositions": dispositions,
             }
         )
-        return {"items": rows, "count": len(rows)}
+        return JSONResponse({"items": rows, "count": len(rows)})
 
+    @app.patch("/api/events/{event_id}", dependencies=[Depends(require_api_key)])
+    async def patch_event(event_id: int, payload: dict[str, Any]) -> JSONResponse:
+        raw_disposition = str(payload.get("disposition", ""))
+        disposition_norm = normalize_disposition(raw_disposition)
+        if disposition_norm not in EVENT_DISPOSITIONS:
+            return _error_response(
+                400,
+                "INVALID_DISPOSITION",
+                f"Unknown disposition: {raw_disposition}",
+                {"allowed": list(EVENT_DISPOSITIONS)},
+            )
 
+        updated = await state.db.update_event_disposition(event_id, disposition_norm)
+        if updated is None:
+            return _error_response(404, "EVENT_NOT_FOUND", f"Event {event_id} not found")
+        return JSONResponse({"ok": True, "item": updated})
 
-    def _validate_target_url(url: str) -> str:
-        candidate = url.strip()
-        parsed = urlparse(candidate)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise HTTPException(status_code=400, detail="URL must include http(s) scheme and hostname.")
-        return candidate
+    @app.get("/api/tests/capabilities", dependencies=[Depends(require_api_key)])
+    async def tests_capabilities() -> dict[str, Any]:
+        return {
+            "enable_zap": bool(cfg.tests.enable_zap),
+            "enable_tls": True,
+            "enable_headers": True,
+            "url_scheme_defaults_to_http": True,
+        }
 
     @app.post("/api/tests/headers", dependencies=[Depends(require_api_key)])
-    async def test_headers(payload: dict[str, Any]) -> dict[str, Any]:
-        url = _validate_target_url(str(payload.get("url", "")))
+    async def test_headers(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            url = _normalize_target_url(str(payload.get("url", "")))
+        except ValueError as exc:
+            return _error_response(400, "INVALID_TARGET", str(exc))
+
         logger.info("Running defensive header test for %s", url)
         result = _HEADERS_CHECKS.check_headers_for_url(url, timeout=float(cfg.tests.request_timeout_seconds))
         if result.get("status") == "error":
-            raise HTTPException(status_code=400, detail=str(result.get("error", "Header check failed")))
-        return result
+            return _error_response(400, "HEADER_TEST_FAILED", str(result.get("error", "Header check failed")), {"target": url})
+        return JSONResponse(result)
 
     @app.post("/api/tests/tls", dependencies=[Depends(require_api_key)])
-    async def test_tls(payload: dict[str, Any]) -> dict[str, Any]:
-        url = _validate_target_url(str(payload.get("url", "")))
+    async def test_tls(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            url = _normalize_target_url(str(payload.get("url", "")))
+        except ValueError as exc:
+            return _error_response(400, "INVALID_TARGET", str(exc))
+
+        parsed = urlparse(url)
+        if parsed.scheme == "http":
+            return _error_response(400, "TLS_HTTP_TARGET", "TLS test requires an https:// target (got http://).", {"target": url})
+
         logger.info("Running defensive TLS expiry test for %s", url)
         result = _TLS_CHECKS.check_tls_expiry_for_url(url, timeout=float(cfg.tests.request_timeout_seconds))
         if result.get("status") == "error":
-            raise HTTPException(status_code=400, detail=str(result.get("error", "TLS check failed")))
-        return result
+            return _error_response(400, "TLS_TEST_FAILED", str(result.get("error", "TLS check failed")), {"target": url})
+        return JSONResponse(result)
 
     @app.post("/api/tests/zap-baseline", dependencies=[Depends(require_api_key)])
-    async def test_zap_baseline(payload: dict[str, Any]) -> dict[str, Any]:
-        url = _validate_target_url(str(payload.get("url", "")))
+    async def test_zap_baseline(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            url = _normalize_target_url(str(payload.get("url", "")))
+        except ValueError as exc:
+            return _error_response(400, "INVALID_TARGET", str(exc))
+
         if not cfg.tests.enable_zap:
-            raise HTTPException(status_code=400, detail="ZAP baseline is disabled by config (tests.enable_zap=false).")
+            return _error_response(409, "ZAP_DISABLED", "ZAP baseline is disabled by config (tests.enable_zap=false).", {"config_hint": "Set tests.enable_zap=true"})
         if not _ZAP_CHECKS.is_docker_available():
-            raise HTTPException(status_code=400, detail="Docker is required for ZAP baseline but was not found in PATH.")
+            return _error_response(400, "DOCKER_REQUIRED", "Docker is required for ZAP baseline but was not found in PATH.")
+
         reports_dir = Path(cfg.tests.reports_dir)
         reports_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Running passive-only ZAP baseline test for %s", url)
@@ -1235,13 +1440,13 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             name="ui-target",
         )
         if result.get("status") == "error":
-            raise HTTPException(status_code=500, detail=str(result.get("stderr", "ZAP baseline failed")))
+            return _error_response(500, "ZAP_RUN_FAILED", str(result.get("stderr", "ZAP baseline failed")), {"target": url})
         report_path = Path(str(result["report"])).resolve()
         base = reports_dir.resolve()
         if base not in report_path.parents:
-            raise HTTPException(status_code=500, detail="Generated report is outside configured reports directory.")
+            return _error_response(500, "INVALID_REPORT_PATH", "Generated report is outside configured reports directory.")
         rel = report_path.relative_to(base)
-        return {**result, "report_url": f"/reports/{rel.as_posix()}"}
+        return JSONResponse({**result, "report_url": f"/reports/{rel.as_posix()}"})
 
     @app.get("/reports/{report_path:path}", dependencies=[Depends(require_api_key)])
     async def get_report(report_path: str) -> FileResponse:

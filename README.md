@@ -119,16 +119,34 @@ If your Zeek deployment outputs JSON logs, point `ingest.zeek.log_dir` to its ac
 curl -i http://127.0.0.1:18080/admin
 ```
 
-Then query events:
+Then query events (defaults to OPEN disposition only):
 
 ```bash
 curl -H "X-API-Key: changeme" http://127.0.0.1:8000/api/events
 ```
 
+Filter by disposition(s):
+
+```bash
+curl -H "X-API-Key: changeme" "http://127.0.0.1:8000/api/events?disposition=OPEN,MALICIOUS"
+```
+
+Include all dispositions:
+
+```bash
+curl -H "X-API-Key: changeme" "http://127.0.0.1:8000/api/events?include_all=true"
+```
+
 
 ## Tests tab (defensive prove-risk integration)
 
-HoneySentinel includes a **Tests** tab in the web UI for defensive checks against a target URL:
+HoneySentinel includes a **Tests** tab in the web UI for defensive checks against a target URL.
+
+Target URL rules:
+- If no scheme is supplied, the backend/UI normalize to `http://`.
+- Headers test supports both `http://` and `https://`.
+- TLS Expiry test requires `https://`; `http://` returns a structured 400 error.
+
 
 - **Run Headers**: passive HTTP security header presence checks.
 - **Run TLS Expiry**: certificate expiry and days-remaining view with warning thresholds.
@@ -148,6 +166,8 @@ When enabled (`tests.enable_zap: true`), the backend runs `zap-baseline.py` in D
 Generated HTML reports are served at `/reports/<path>` with path traversal protections.
 
 All `/api/*` routes, including `/api/tests/*` and `/reports/*`, require `X-API-Key` when `security.api_key` is configured.
+
+`/api/tests/capabilities` reports feature flags used by the UI (for example `enable_zap`).
 
 ## Development
 

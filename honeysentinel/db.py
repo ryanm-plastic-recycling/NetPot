@@ -30,7 +30,8 @@ class Database:
                 listener TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 message TEXT NOT NULL,
-                data_json TEXT NOT NULL
+                data_json TEXT NOT NULL,
+                disposition TEXT NOT NULL DEFAULT 'OPEN'
             )
             """
         )
@@ -43,7 +44,14 @@ class Database:
             )
             """
         )
-        for idx in ("ts", "src_ip", "listener", "event_type"):
+        # Safe schema upgrade for existing databases.
+        columns = await (await self.conn.execute("PRAGMA table_info(events)")).fetchall()
+        existing_columns = {str(col[1]) for col in columns}
+        if "disposition" not in existing_columns:
+            await self.conn.execute("ALTER TABLE events ADD COLUMN disposition TEXT NOT NULL DEFAULT 'OPEN'")
+            await self.conn.execute("UPDATE events SET disposition = 'OPEN' WHERE disposition IS NULL OR disposition = ''")
+
+        for idx in ("ts", "src_ip", "listener", "event_type", "disposition"):
             await self.conn.execute(f"CREATE INDEX IF NOT EXISTS idx_events_{idx} ON events ({idx})")
         await self.conn.commit()
 
@@ -56,8 +64,8 @@ class Database:
             raise RuntimeError("database not connected")
         cur = await self.conn.execute(
             """
-            INSERT INTO events (ts, event_type, src_ip, src_port, dst_port, listener, session_id, message, data_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO events (ts, event_type, src_ip, src_port, dst_port, listener, session_id, message, data_json, disposition)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.ts,
@@ -69,6 +77,7 @@ class Database:
                 event.session_id,
                 event.message,
                 json.dumps(event.data, ensure_ascii=False),
+                event.disposition,
             ),
         )
         await self.conn.commit()
@@ -121,13 +130,18 @@ class Database:
         if filters.get("event_id") is not None:
             clauses.append("id = ?")
             args.append(int(filters["event_id"]))
+        dispositions = filters.get("dispositions")
+        if dispositions:
+            placeholders = ",".join(["?"] * len(dispositions))
+            clauses.append(f"disposition IN ({placeholders})")
+            args.extend(dispositions)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         limit = int(filters.get("limit", 100))
         offset = int(filters.get("offset", 0))
 
         q = f"""
-            SELECT id, ts, event_type, src_ip, src_port, dst_port, listener, session_id, message, data_json
+            SELECT id, ts, event_type, src_ip, src_port, dst_port, listener, session_id, message, data_json, disposition
             FROM events
             {where}
             ORDER BY id DESC
@@ -150,6 +164,37 @@ class Database:
                     "session_id": row[7],
                     "message": row[8],
                     "data": json.loads(row[9]),
+                    "disposition": row[10],
                 }
             )
         return events
+
+    async def update_event_disposition(self, event_id: int, disposition: str) -> dict[str, Any] | None:
+        if not self.conn:
+            raise RuntimeError("database not connected")
+        await self.conn.execute(
+            "UPDATE events SET disposition = ? WHERE id = ?",
+            (disposition, event_id),
+        )
+        await self.conn.commit()
+        row = await (
+            await self.conn.execute(
+                "SELECT id, ts, event_type, src_ip, src_port, dst_port, listener, session_id, message, data_json, disposition FROM events WHERE id = ?",
+                (event_id,),
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "ts": row[1],
+            "event_type": row[2],
+            "src_ip": row[3],
+            "src_port": row[4],
+            "dst_port": row[5],
+            "listener": row[6],
+            "session_id": row[7],
+            "message": row[8],
+            "data": json.loads(row[9]),
+            "disposition": row[10],
+        }
