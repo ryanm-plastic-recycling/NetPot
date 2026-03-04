@@ -85,6 +85,13 @@ Variables used by default config patterns:
 
 If an alert channel is enabled but required credentials are still empty after expansion, HoneySentinel logs a warning so you can quickly verify env loading.
 
+### Startup `.env` behavior
+
+- `.env` loading can be inconsistent on Windows shells/services, so NetPot explicitly loads env files at startup before parsing `config.yaml`.
+- Optional `DOTENV_PATH` can point to a specific env file for service managers or scheduled tasks.
+- If `DOTENV_PATH` is unset (or points to a missing file), NetPot loads `.env` from the current working directory.
+
+
 ## Alert env vars (recommended)
 
 Keep secrets out of `config.yaml` by exporting env vars referenced as `${VAR}` in YAML:

@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import ipaddress
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -1163,6 +1164,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             "privacy": asdict(cfg.privacy),
             "ingest": asdict(cfg.ingest),
             "tests": asdict(cfg.tests),
+            "dotenv_source": os.environ.get("HONEYSENTINEL_DOTENV_SOURCE", "unknown"),
         }
 
     @app.get("/api/events", dependencies=[Depends(require_api_key)])
