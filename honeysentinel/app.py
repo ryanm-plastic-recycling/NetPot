@@ -387,6 +387,17 @@ def _render_base_html(active: str) -> str:
   const btnClose = el("btnClose");
 
   const LS_KEY = "honeysentinel.apiKey";
+  const DISPOSITIONS = [
+    {{ value: "OPEN", label: "Open" }},
+    {{ value: "TEST", label: "Test" }},
+    {{ value: "FALSE_POSITIVE", label: "False Positive" }},
+    {{ value: "KNOWN_SCANNER", label: "Known Scanner" }},
+    {{ value: "MALICIOUS", label: "Malicious" }},
+    {{ value: "UNKNOWN", label: "Unknown" }},
+    {{ value: "BENIGN", label: "Benign" }},
+    {{ value: "NEEDS_REVIEW", label: "Needs Review" }},
+  ];
+  const DISPOSITIONS_STRINGS = DISPOSITIONS.map(d => d.value);
 
   function setStatus(ok, text){{
     dot.className = "dot " + (ok ? "ok" : "bad");
@@ -831,8 +842,8 @@ def _render_base_html(active: str) -> str:
     if (dispositionEl) {{
       dispositionEl.innerHTML = "";
       for (const d of DISPOSITIONS) {{
-        const opt = new Option(d, d);
-        if (d === "OPEN") opt.selected = true;
+        const opt = new Option(d.label, d.value);
+        if (d.value === "OPEN") opt.selected = true;
         dispositionEl.appendChild(opt);
       }}
     }}
@@ -906,12 +917,17 @@ def _render_base_html(active: str) -> str:
     const li = listenerEl?.value || "";
     if (li) params.set("listener", li);
 
-    const dispositionEl = document.getElementById("dispositionFilter");
-    const selectedDispositions = dispositionEl ? Array.from(dispositionEl.selectedOptions).map(o => o.value) : ["OPEN"];
-    if (!selectedDispositions.length || selectedDispositions.length === DISPOSITIONS.length) {{
-      params.set("include_all", "true");
-    }} else {{
-      for (const d of selectedDispositions) params.append("disposition", d);
+    try {{
+      const dispositionEl = document.getElementById("dispositionFilter");
+      const selectedDispositions = dispositionEl ? Array.from(dispositionEl.selectedOptions).map(o => o.value) : ["OPEN"];
+      if (!selectedDispositions.length || selectedDispositions.length === DISPOSITIONS_STRINGS.length) {{
+        params.set("include_all", "true");
+      }} else {{
+        for (const d of selectedDispositions) params.append("disposition", d);
+      }}
+    }} catch (err) {{
+      console.error("Failed to map disposition filters; defaulting to OPEN only.", err);
+      params.append("disposition", "OPEN");
     }}
 
     const data = await apiFetch("/api/events?" + params.toString());
@@ -933,6 +949,13 @@ def _render_base_html(active: str) -> str:
       const src = `${{ev.src_ip}}:${{ev.src_port}}`;
       const msg = eventSummaryText(ev);
       const ts = ev.ts || "";
+      let dispositionOptions = "";
+      try {{
+        dispositionOptions = DISPOSITIONS.map(d => `<option value="${{d.value}}" ${{d.value === ev.disposition ? "selected" : ""}}>${{d.label}}</option>`).join("");
+      }} catch (err) {{
+        console.error("Failed to render disposition dropdown; defaulting to OPEN only.", err);
+        dispositionOptions = `<option value="OPEN" ${{ev.disposition === "OPEN" ? "selected" : ""}}>Open</option>`;
+      }}
       return `
         <tr data-id="${{ev.id}}">
           <td class="mono">${{ev.id}}</td>
@@ -942,7 +965,7 @@ def _render_base_html(active: str) -> str:
           <td class="mono">${{escapeHtml(src)}}</td>
           <td>
             <select class="row-disposition" data-id="${{ev.id}}">
-              ${{DISPOSITIONS.map(d => `<option value="${{d}}" ${{d === ev.disposition ? "selected" : ""}}>${{d}}</option>`).join("")}}
+              ${{dispositionOptions}}
             </select>
           </td>
           <td class="msg" title="${{escapeHtml(msg)}}">${{escapeHtml(msg)}}</td>
