@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import ipaddress
 import logging
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from honeysentinel.alerting import Alerter
 from honeysentinel.config import AppConfig, load_config
@@ -23,6 +26,22 @@ from honeysentinel.rules import RuleEngine
 
 
 logger = logging.getLogger(__name__)
+
+
+def _load_prove_risk_module(module_name: str) -> Any:
+    module_path = Path(__file__).resolve().parent.parent / "prove-risk" / "checks" / f"{module_name}.py"
+    spec = importlib.util.spec_from_file_location(f"prove_risk_{module_name}", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load module: {module_name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_HEADERS_CHECKS = _load_prove_risk_module("headers")
+_TLS_CHECKS = _load_prove_risk_module("tls_expiry")
+_ZAP_CHECKS = _load_prove_risk_module("zap_baseline")
 
 
 class AppState:
@@ -78,7 +97,7 @@ class AppState:
 
 
 def _render_base_html(active: str) -> str:
-    # active: "events" | "system" | "alerts"
+     # active: "events" | "system" | "alerts" | "tests"
     # Single-file UI, served by FastAPI. No build tooling.
     return rf"""<!doctype html>
 <html lang="en">
@@ -280,6 +299,7 @@ def _render_base_html(active: str) -> str:
         <a class="tab {'active' if active=='events' else ''}" href="/">Events</a>
         <a class="tab {'active' if active=='system' else ''}" href="/system">System</a>
         <a class="tab {'active' if active=='alerts' else ''}" href="/alerts">Alerts</a>
+        <a class="tab {'active' if active=='tests' else ''}" href="/tests">Tests</a>
       </div>
 
       <div class="right">
@@ -677,10 +697,46 @@ def _render_base_html(active: str) -> str:
     `;
   }}
 
+  function renderTestsPage() {{
+    page.innerHTML = `
+      <div class="grid">
+        <div class="card">
+          <div class="hd">
+            <div class="title">Defensive Tests</div>
+            <div class="pill">/api/tests/*</div>
+          </div>
+          <div class="bd">
+            <div class="row" style="margin-bottom:10px;">
+              <div class="field">
+                <label>API Key (stored in browser)</label>
+                <input id="apiKey" type="password" placeholder="Paste your X-API-Key value…" />
+              </div>
+              <div class="field">
+                <label>Target URL</label>
+                <input id="testUrl" placeholder="https://example.com" />
+              </div>
+            </div>
+            <div class="row">
+              <button class="btn primary" id="btnRunHeaders">Run Headers</button>
+              <button class="btn primary" id="btnRunTls">Run TLS Expiry</button>
+              <button class="btn" id="btnRunZap">Run ZAP Baseline (passive, opt-in)</button>
+              <button class="btn" id="btnTestEmail">Send test email</button>
+              <button class="btn" id="btnTestSms">Send test SMS</button>
+            </div>
+            <div style="height:12px;"></div>
+            <div id="err" class="err"></div>
+            <div id="testsOutput" class="hint">Run a test to see results.</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }}
+
   function mountPage() {{
     if (ACTIVE === "events") renderEventsPage();
     else if (ACTIVE === "system") renderSystemPage();
-    else renderAlertsPage();
+    else if (ACTIVE === "alerts") renderAlertsPage();
+    else renderTestsPage();
   }}
 
   function setSelectOptions(select, values){{
@@ -940,6 +996,33 @@ def _render_base_html(active: str) -> str:
     setAuto();
   }}
 
+  async function runTestsApi(path) {{
+    const url = (document.getElementById("testUrl")?.value || "").trim();
+    return apiFetch(path, {{ method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify({{ url }}) }});
+  }}
+
+  function badge(ok){{ return `<span class="pill" style="color:${{ok ? "var(--good)" : "var(--bad)"}}">${{ok ? "PASS" : "FAIL"}}</span>`; }}
+
+  function renderTestOutput(data, kind){{
+    const out = document.getElementById("testsOutput"); if (!out) return;
+    if (kind === "headers") {{
+      const rows = Object.entries(data.present || {{}}).map(([k,v]) => `<tr><td>${{k}}</td><td>${{badge(Boolean(v))}}</td></tr>`).join("");
+      out.innerHTML = `<div><b>Headers for ${{data.url}}</b></div><table><tbody>${{rows}}</tbody></table>`;
+      return;
+    }}
+    if (kind === "tls") {{
+      out.innerHTML = `<div><b>TLS for ${{data.url}}</b></div><div>Days remaining: <b>${{data.days_remaining ?? "n/a"}}</b> (warn ≤ ${{data.warning_threshold_days}}, critical ≤ ${{data.critical_threshold_days}})</div>`;
+      return;
+    }}
+    if (kind === "zap") {{
+      const s = data.summary || {{}};
+      const link = data.report_url ? `<a href="${{data.report_url}}" target="_blank">Open HTML report</a>` : "";
+      out.innerHTML = `<div><b>ZAP baseline (passive) for ${{data.url}}</b></div><div>High:${{s.high||0}} Medium:${{s.medium||0}} Low:${{s.low||0}} Info:${{s.informational||0}}</div><div>${{link}}</div>`;
+      return;
+    }}
+    out.textContent = JSON.stringify(data, null, 2);
+  }}
+
   // Alerts page controls
   if (ACTIVE === "alerts") {{
     document.getElementById("btnTestEmail")?.addEventListener("click", () => testEmail().catch(e => {{
@@ -948,6 +1031,23 @@ def _render_base_html(active: str) -> str:
     document.getElementById("btnTestSms")?.addEventListener("click", () => testSms().catch(e => {{
       const errEl = document.getElementById("err"); if (errEl) errEl.textContent = String(e.message || e);
     }}));
+  }}
+
+  if (ACTIVE === "tests") {{
+    document.getElementById("btnRunHeaders")?.addEventListener("click", async () => {{
+      try {{ const r = await runTestsApi("/api/tests/headers"); renderTestOutput(r, "headers"); }}
+      catch(e){{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}
+    }});
+    document.getElementById("btnRunTls")?.addEventListener("click", async () => {{
+      try {{ const r = await runTestsApi("/api/tests/tls"); renderTestOutput(r, "tls"); }}
+      catch(e){{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}
+    }});
+    document.getElementById("btnRunZap")?.addEventListener("click", async () => {{
+      try {{ const r = await runTestsApi("/api/tests/zap-baseline"); renderTestOutput(r, "zap"); }}
+      catch(e){{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}
+    }});
+    document.getElementById("btnTestEmail")?.addEventListener("click", () => testEmail().then(r => renderTestOutput(r, "email")).catch(e => {{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}));
+    document.getElementById("btnTestSms")?.addEventListener("click", () => testSms().then(r => renderTestOutput(r, "sms")).catch(e => {{ const errEl=document.getElementById("err"); if (errEl) errEl.textContent=String(e.message||e); }}));
   }}
 
   // Initial load
@@ -1049,6 +1149,10 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
     async def alerts_page() -> str:
         return _render_base_html("alerts")
 
+    @app.get("/tests", response_class=HTMLResponse)
+    async def tests_page() -> str:
+        return _render_base_html("tests")
+
     # APIs
     @app.get("/api/info", dependencies=[Depends(require_api_key)])
     async def info() -> dict[str, Any]:
@@ -1058,6 +1162,7 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             "http_listener": asdict(cfg.http_listener),
             "privacy": asdict(cfg.privacy),
             "ingest": asdict(cfg.ingest),
+            "tests": asdict(cfg.tests),
         }
 
     @app.get("/api/events", dependencies=[Depends(require_api_key)])
@@ -1082,6 +1187,69 @@ def create_app(config_path: str = "config.yaml") -> FastAPI:
             }
         )
         return {"items": rows, "count": len(rows)}
+
+
+
+    def _validate_target_url(url: str) -> str:
+        candidate = url.strip()
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=400, detail="URL must include http(s) scheme and hostname.")
+        return candidate
+
+    @app.post("/api/tests/headers", dependencies=[Depends(require_api_key)])
+    async def test_headers(payload: dict[str, Any]) -> dict[str, Any]:
+        url = _validate_target_url(str(payload.get("url", "")))
+        logger.info("Running defensive header test for %s", url)
+        result = _HEADERS_CHECKS.check_headers_for_url(url, timeout=float(cfg.tests.request_timeout_seconds))
+        if result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=str(result.get("error", "Header check failed")))
+        return result
+
+    @app.post("/api/tests/tls", dependencies=[Depends(require_api_key)])
+    async def test_tls(payload: dict[str, Any]) -> dict[str, Any]:
+        url = _validate_target_url(str(payload.get("url", "")))
+        logger.info("Running defensive TLS expiry test for %s", url)
+        result = _TLS_CHECKS.check_tls_expiry_for_url(url, timeout=float(cfg.tests.request_timeout_seconds))
+        if result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=str(result.get("error", "TLS check failed")))
+        return result
+
+    @app.post("/api/tests/zap-baseline", dependencies=[Depends(require_api_key)])
+    async def test_zap_baseline(payload: dict[str, Any]) -> dict[str, Any]:
+        url = _validate_target_url(str(payload.get("url", "")))
+        if not cfg.tests.enable_zap:
+            raise HTTPException(status_code=400, detail="ZAP baseline is disabled by config (tests.enable_zap=false).")
+        if not _ZAP_CHECKS.is_docker_available():
+            raise HTTPException(status_code=400, detail="Docker is required for ZAP baseline but was not found in PATH.")
+        reports_dir = Path(cfg.tests.reports_dir)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Running passive-only ZAP baseline test for %s", url)
+        result = _ZAP_CHECKS.run_single_target(
+            url=url,
+            reports_dir=reports_dir,
+            minutes=2,
+            docker_timeout=max(30, min(int(cfg.tests.zap_timeout_seconds), 900)),
+            name="ui-target",
+        )
+        if result.get("status") == "error":
+            raise HTTPException(status_code=500, detail=str(result.get("stderr", "ZAP baseline failed")))
+        report_path = Path(str(result["report"])).resolve()
+        base = reports_dir.resolve()
+        if base not in report_path.parents:
+            raise HTTPException(status_code=500, detail="Generated report is outside configured reports directory.")
+        rel = report_path.relative_to(base)
+        return {**result, "report_url": f"/reports/{rel.as_posix()}"}
+
+    @app.get("/reports/{report_path:path}", dependencies=[Depends(require_api_key)])
+    async def get_report(report_path: str) -> FileResponse:
+        base = Path(cfg.tests.reports_dir).resolve()
+        candidate = (base / report_path).resolve()
+        if base not in candidate.parents and candidate != base:
+            raise HTTPException(status_code=400, detail="Invalid report path.")
+        if not candidate.exists() or not candidate.is_file():
+            raise HTTPException(status_code=404, detail="Report not found.")
+        return FileResponse(candidate)
 
     # Alert test endpoints (real sends)
     @app.post("/api/alerts/test/email", dependencies=[Depends(require_api_key)])

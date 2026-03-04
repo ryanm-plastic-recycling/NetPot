@@ -59,6 +59,45 @@ def get_tls_expiry(url: str, timeout: float) -> tuple[dict[str, Any], str | None
     }, None
 
 
+
+
+def check_tls_expiry_for_url(url: str, timeout: float, warn_days: int = 30, critical_days: int = 7) -> dict[str, Any]:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return {
+            "url": url,
+            "status": "error",
+            "error": "URL must use https:// and include a hostname",
+            "warning_threshold_days": warn_days,
+            "critical_threshold_days": critical_days,
+        }
+
+    details, error = get_tls_expiry(url, timeout=timeout)
+    if error:
+        return {
+            "url": url,
+            "status": "error",
+            "error": error,
+            "warning_threshold_days": warn_days,
+            "critical_threshold_days": critical_days,
+        }
+
+    days_remaining = int(details.get("days_remaining", 0))
+    health = "ok"
+    if days_remaining <= critical_days:
+        health = "critical"
+    elif days_remaining <= warn_days:
+        health = "warning"
+
+    return {
+        "url": url,
+        "status": "ok",
+        **details,
+        "warning_threshold_days": warn_days,
+        "critical_threshold_days": critical_days,
+        "health": health,
+    }
+
 def run(targets_path: Path, reports_dir: Path, timeout: float, delay: float) -> list[dict[str, Any]]:
     targets = load_targets(targets_path)
     results: list[dict[str, Any]] = []

@@ -40,6 +40,11 @@ ingest:
     log_dir: /opt/zeek/logs/current
     fallback_log_dir: /var/log/zeek/current
     max_line_bytes: 65536
+tests:
+  enable_zap: false
+  reports_dir: "./prove-risk/reports"
+  request_timeout_seconds: 15
+  zap_timeout_seconds: 300
 noise:
   allowlist:
     - "192.0.2.10"
