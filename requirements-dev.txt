@@ -4,3 +4,4 @@ pytest-asyncio
 ruff
 mypy
 types-PyYAML
+python-dotenv

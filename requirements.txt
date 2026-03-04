@@ -3,3 +3,4 @@ uvicorn
 aiosqlite
 PyYAML
 httpx
+python-dotenv

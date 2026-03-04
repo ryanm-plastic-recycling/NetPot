@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from typing import Any
 import yaml
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -177,6 +179,15 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         webhook=AlertWebhookConfig(**alerts_raw.get("webhook", {})),
         syslog=AlertSyslogConfig(**alerts_raw.get("syslog", {})),
     )
+
+    if alerts.email.enabled and (not alerts.email.username or not alerts.email.password):
+        logger.warning(
+            "Email alerts enabled but SMTP_USERNAME/SMTP_PASSWORD are missing (env not loaded?)"
+        )
+    if alerts.twilio.enabled and (not alerts.twilio.account_sid or not alerts.twilio.auth_token):
+        logger.warning(
+            "Twilio alerts enabled but TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN are missing (env not loaded?)"
+        )
 
     ingest_raw = raw.get("ingest", {})
     ingest = IngestConfig(

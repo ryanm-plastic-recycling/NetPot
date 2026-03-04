@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from honeysentinel.config import load_config
@@ -57,3 +58,47 @@ listeners:
 
     assert cfg.security.api_key == "hs-api-key"
     assert cfg.noise.allowlist == ["192.0.2.10", "198.51.100.0/24"]
+
+
+def test_load_config_warns_when_email_enabled_but_missing_creds(tmp_path: Path, caplog) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+alerts:
+  email:
+    enabled: true
+    smtp_host: smtp.example.com
+""",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        load_config(config_path)
+
+    assert (
+        "Email alerts enabled but SMTP_USERNAME/SMTP_PASSWORD are missing (env not loaded?)"
+        in caplog.text
+    )
+
+
+def test_load_config_warns_when_twilio_enabled_but_missing_creds(tmp_path: Path, caplog) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+alerts:
+  twilio:
+    enabled: true
+    from_number: "+15551230000"
+    to_numbers:
+      - "+15551230001"
+""",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        load_config(config_path)
+
+    assert (
+        "Twilio alerts enabled but TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN are missing (env not loaded?)"
+        in caplog.text
+    )
