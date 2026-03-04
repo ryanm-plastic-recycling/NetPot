@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -67,6 +68,18 @@ def check_headers(url: str, timeout: float) -> tuple[dict[str, bool], dict[str, 
     }
     return present, values, None
 
+
+
+
+def check_headers_for_url(url: str, timeout: float) -> dict[str, Any]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return {"url": url, "status": "error", "error": "URL must include http(s) scheme and hostname"}
+
+    present, values, error = check_headers(url, timeout=timeout)
+    if error:
+        return {"url": url, "status": "error", "error": error, "present": {}, "values": {}}
+    return {"url": url, "status": "ok", "present": present, "values": values}
 
 def run(targets_path: Path, reports_dir: Path, timeout: float, delay: float) -> list[HeaderCheckResult]:
     targets = load_targets(targets_path)

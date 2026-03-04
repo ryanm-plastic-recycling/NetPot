@@ -118,6 +118,30 @@ Then query events:
 curl -H "X-API-Key: changeme" http://127.0.0.1:8000/api/events
 ```
 
+
+## Tests tab (defensive prove-risk integration)
+
+HoneySentinel includes a **Tests** tab in the web UI for defensive checks against a target URL:
+
+- **Run Headers**: passive HTTP security header presence checks.
+- **Run TLS Expiry**: certificate expiry and days-remaining view with warning thresholds.
+- **Run ZAP Baseline**: passive-only OWASP ZAP baseline scan (no active attacks).
+
+ZAP baseline is explicitly opt-in and requires Docker:
+
+```yaml
+tests:
+  enable_zap: false
+  reports_dir: "./prove-risk/reports"
+  request_timeout_seconds: 15
+  zap_timeout_seconds: 300
+```
+
+When enabled (`tests.enable_zap: true`), the backend runs `zap-baseline.py` in Docker with timeouts/caps and stores reports under `tests.reports_dir`.
+Generated HTML reports are served at `/reports/<path>` with path traversal protections.
+
+All `/api/*` routes, including `/api/tests/*` and `/reports/*`, require `X-API-Key` when `security.api_key` is configured.
+
 ## Development
 
 ```bash

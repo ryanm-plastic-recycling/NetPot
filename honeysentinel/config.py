@@ -110,6 +110,14 @@ class NoiseConfig:
 
 
 @dataclass(slots=True)
+class TestsConfig:
+    enable_zap: bool = False
+    reports_dir: str = "./prove-risk/reports"
+    request_timeout_seconds: int = 15
+    zap_timeout_seconds: int = 300
+
+
+@dataclass(slots=True)
 class TcpListenerConfig:
     name: str
     host: str
@@ -136,6 +144,7 @@ class AppConfig:
     ingest: IngestConfig = field(default_factory=IngestConfig)
     rules: RulesConfig = field(default_factory=RulesConfig)
     noise: NoiseConfig = field(default_factory=NoiseConfig)
+    tests: TestsConfig = field(default_factory=TestsConfig)
     tcp_listeners: list[TcpListenerConfig] = field(default_factory=list)
     http_listener: HttpListenerConfig = field(default_factory=HttpListenerConfig)
 
@@ -197,6 +206,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
 
     rules = RulesConfig(**raw.get("rules", {}))
     noise = NoiseConfig(**raw.get("noise", {}))
+    tests = TestsConfig(**raw.get("tests", {}))
 
     listeners: list[TcpListenerConfig] = []
     for entry in raw.get("listeners", {}).get("tcp", []):
@@ -215,6 +225,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         ingest=ingest,
         rules=rules,
         noise=noise,
+        tests=tests,
         tcp_listeners=listeners,
         http_listener=http_listener,
     )
